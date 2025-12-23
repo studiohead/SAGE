@@ -3,7 +3,6 @@
 A Multistage Developmental Cognitive Architecture with Asynchronous Topological Incineration, Null-Space Rotation & Null-Space Convergence
 
 [![License: Proprietary](https://img.shields.io/badge/License-All_Rights_Reserved-red.svg)](LICENSE)
-[![Status: Patent_Pending](https://img.shields.io/badge/Intellectual_Property-Patent_Pending-blue.svg)](PATENT_NOTICE.md)
 [![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Framework: PyTorch](https://img.shields.io/badge/Framework-PyTorch-ee4c2c.svg)](https://pytorch.org/)
 
