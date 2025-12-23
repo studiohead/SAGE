@@ -1,0 +1,82 @@
+[
+    {
+        "timestamp": "2025-12-23T14:04:30.157007",
+        "stage": "Teen",
+        "stage_idx": 4,
+        "epoch": 0,
+        "metrics": {
+            "loss": 0.019239,
+            "gamma_confidence": 0.7469,
+            "manifold_variance": 0.0,
+            "manifold_radius": 0.0
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    },
+    {
+        "timestamp": "2025-12-23T14:04:31.211528",
+        "stage": "Teen",
+        "stage_idx": 4,
+        "epoch": 1,
+        "metrics": {
+            "loss": 0.092909,
+            "gamma_confidence": 0.746,
+            "manifold_variance": 0.0,
+            "manifold_radius": 0.0
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    },
+    {
+        "timestamp": "2025-12-23T14:04:32.269640",
+        "stage": "Teen",
+        "stage_idx": 4,
+        "epoch": 2,
+        "metrics": {
+            "loss": 0.080734,
+            "gamma_confidence": 0.7445,
+            "manifold_variance": 0.0,
+            "manifold_radius": 0.0
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    },
+    {
+        "timestamp": "2025-12-23T14:04:33.326182",
+        "stage": "Teen",
+        "stage_idx": 4,
+        "epoch": 3,
+        "metrics": {
+            "loss": 0.069494,
+            "gamma_confidence": 0.7448,
+            "manifold_variance": 0.0,
+            "manifold_radius": 0.0
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    },
+    {
+        "timestamp": "2025-12-23T14:04:34.390174",
+        "stage": "Teen",
+        "stage_idx": 4,
+        "epoch": 4,
+        "metrics": {
+            "loss": 0.059429,
+            "gamma_confidence": 0.7451,
+            "manifold_variance": 0.0,
+            "manifold_radius": 0.0
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    }
+]

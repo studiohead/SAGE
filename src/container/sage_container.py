@@ -60,29 +60,23 @@ class SAGEContainer(nn.Module):
         self.hidden_dim = getattr(sample_transformer, 'embed_dim', 128)
         self.fusion = StageFusion(len(stage_models), self.hidden_dim)
 
-    def update_plasticity_window(self):
-        """
-        SLIDING WINDOW PLASTICITY:
-        Freezes the foundation and thaws the active 4-layer training window.
-        """
+    def update_plasticity_window(self, cumulative=False):
         current_name = self.stage_names[self.current_stage_idx]
         params = STAGE_HYPERPARAMS[current_name]
         start, end = params["layer_start"], params["layer_end"]
 
-        # 1. Global Freeze (Everything locked by default)
-        for param in self.parameters():
-            param.requires_grad = False
+        if not cumulative:
+            # Global Freeze (default behavior)
+            for param in self.parameters():
+                param.requires_grad = False
 
-        # 2. Sequential Layer Harvesting
+        # Sequential Layer Harvesting
         all_layers = []
         for name in self.stage_names:
             if name in self.stages:
-                # Harvesting Transformer blocks from the stage-specific ModuleList
                 all_layers.extend(self.stages[name].layers)
 
-        # 3. Surgical Thaw (The Aperture)
-        # Only the layers in the config-defined range for the current stage are thawed
-        print(f"[*] SAGE Aperture: Activating Layers {start}-{end} for {current_name}")
+        # Surgical Thaw (aperture)
         for i in range(start, min(end, len(all_layers))):
             layer = all_layers[i]
             for param in layer.parameters():

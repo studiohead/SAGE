@@ -58,16 +58,10 @@ class SensoryFrontend(nn.Module):
 
 
 # -------------------------
-# MANIFOLD VARIANCE (CORRECT)
+# MANIFOLD VARIANCE
 # -------------------------
 
 def compute_manifold_variance(graph: SharedConceptGraph):
-    """
-    Conceptual (Topological) Variance:
-    Attention-agnostic fallback measuring centroid-relative dispersion.
-    Excludes tombstoned / incinerated nodes.
-    """
-
     variances = []
 
     for node_id, centroid in graph.anchor_tensor.items():
@@ -109,13 +103,13 @@ def run_train_cycle(frontend, sage, auditor, analytics, stage_name, args):
 
     stage_idx = STAGE_ORDER.index(stage_name)
     sage.current_stage_idx = stage_idx
-    sage.update_plasticity_window()
+    sage.update_plasticity_window(cumulative=True)
 
     hparams = STAGE_HYPERPARAMS[stage_name]
     print(f"\n=== SAGE SURGICAL TRAINING: {stage_name.upper()} ===")
     print(f"[*] Layer Range: {hparams['layer_start']} - {hparams['layer_end']}")
 
-    trainable_params = list(frontend.parameters()) + list(sage.parameters())
+    trainable_params = [p for p in sage.parameters() if p.requires_grad] + list(frontend.parameters())
 
     optimizer = optim.AdamW(
         trainable_params,
@@ -228,8 +222,6 @@ def main():
     parser.add_argument("--load", type=str)
     args = parser.parse_args()
 
-    target_stage = args.stage.capitalize()
-
     analytics = SAGEAnalyticsEngine()
     graph = SharedConceptGraph(embedding_dim=128)
     auditor = SageAuditor(graph, mode="SAGE_DELEGATED")
@@ -260,7 +252,15 @@ def main():
         seeder.seed_from_sensory_patterns({i: torch.rand(1, 784) for i in range(10)})
 
     if args.mode == "train":
-        run_train_cycle(frontend, sage_container, auditor, analytics, target_stage, args)
+        if args.stage.lower() == "all":
+            start_idx = STAGE_ORDER.index(args.load.capitalize()) if args.load else 0
+            for stage_idx in range(start_idx, len(STAGE_ORDER)):
+                sage_container.current_stage_idx = stage_idx
+                sage_container.update_plasticity_window(cumulative=True)
+                stage_name = STAGE_ORDER[stage_idx]
+                run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args)
+        else:
+            run_train_cycle(frontend, sage_container, auditor, analytics, args.stage.capitalize(), args)
 
     elif args.mode == "test_manifold":
         var = compute_manifold_variance(graph)
