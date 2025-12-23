@@ -14,36 +14,37 @@ class AdultTransformer(DevelopmentalTransformer):
     """
 
     def __init__(self):
+        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
+        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Adult"]
 
-        # Relational Subspace Projection
+        # Dynamic Layer Allocation: derived from config boundaries (e.g., 20-24)
+        num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
+
+        # 3. Transformer Stack (Managed by SAGEContainer's 4-layer sliding window)
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=nhead,
+                dim_feedforward=embed_dim * 4,
+                dropout=stage_cfg.get("dropout", 0.2)
+            ) for _ in range(num_stage_layers)
+        ])
+
+        # 4. Relational Subspace Projection
         self.graph_proj = nn.Linear(embed_dim, embed_dim)
 
-        # Surgical Cross-Attention: Retrieves specific conceptual instances
+        # 5. Surgical Cross-Attention: Retrieves specific conceptual instances
         self.cross_attn = nn.MultiheadAttention(embed_dim, nhead)
 
-        # Deep Reasoning Pass: Refinement for relational depth
-        self.refiner = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 4),
-            nn.GELU(),
-            nn.Linear(embed_dim * 4, embed_dim),
-            nn.LayerNorm(embed_dim)
-        )
+        # 6. Output Refinement
+        self.refiner_norm = nn.LayerNorm(embed_dim)
 
         self.plasticity_scale = stage_cfg["plasticity_scale"]
-        self.training_layers = stage_cfg["training_layers"]
-        self.trainable_layer_range = (0, self.training_layers)
-
-    def _set_trainable_layers(self):
-        start, num_layers = self.trainable_layer_range
-        for i, layer in enumerate(self.children()):
-            requires_grad = start <= i < (start + num_layers)
-            for param in layer.parameters():
-                param.requires_grad = requires_grad
 
     def forward(self, x, graph_matrix, Wi=1.0):
         """
@@ -51,16 +52,14 @@ class AdultTransformer(DevelopmentalTransformer):
             output: [seq_len, batch, dim]
             impact/trace: The attention map (Active Reasoning Path) for Stage 7.
         """
-        self._set_trainable_layers()
         attn_map = None
 
+        # 1. CROSS-ATTENTION RETRIEVAL (Patent Logic)
         if graph_matrix is not None:
-            # 1. Project graph into relational subspace
-            # [num_nodes, dim]
+            # Project graph into relational subspace
             G_projected = self.graph_proj(graph_matrix)
 
-            # 2. Cross-Attention Retrieval (Q=input tokens, K/V=Graph Manifold)
-            # Need weights for Stage 7 Meta-Governance
+            # Retrieval (Q=input tokens, K/V=Graph Manifold)
             # x is [seq_len, batch, dim], k_v is [num_nodes, batch, dim]
             k_v = G_projected.unsqueeze(1).expand(-1, x.size(1), -1)
 
@@ -69,27 +68,27 @@ class AdultTransformer(DevelopmentalTransformer):
                 key=k_v,
                 value=k_v,
                 need_weights=True,
-                average_attn_weights=True  # Averaged across heads for the path
+                average_attn_weights=True
             )
 
             # Modulate update by Global Plasticity (Wi)
             x = self.norm(x + (Wi * attn_out))
 
-        # 3. Deep Reasoning Refinement
-        # Standard 6-pass residual block
-        for _ in range(6):
-            x = self.refiner(x) + x
+        # 2. TRANSFORMER PROCESSING (Aperture managed by SAGEContainer)
+        for layer in self.layers:
+            x = layer(x)
 
-        # 4. Impact Calculation (Confidence Signal)
-        # Calculate entropy of retrieval: Low entropy = Targeted/Confident retrieval
-        # If attn_map is [batch, seq_len, num_nodes]
+        # 3. OUTPUT REFINEMENT
+        x = self.refiner_norm(x)
+
+        # 4. IMPACT CALCULATION (Confidence Signal)
+        # Low entropy = Targeted/Confident retrieval
         if attn_map is not None:
             entropy = -torch.sum(attn_map * torch.log(attn_map + 1e-9), dim=-1).mean()
-            # Normalize impact score for the Container
+            # Normalize impact score: 0 = high confidence, 1 = chaotic/uncertain
             impact = torch.clamp(entropy / 5.0, 0, 1)
         else:
             impact = torch.tensor(0.5, device=x.device)
 
-        # IMPORTANT: Returning the attn_map as the 'impact/trace' 
-        # so SAGEContainer can pass it to Stage 7 for Path Reconstruction.
-        return self.stage_weight * x, attn_map
+        # Return governed output and the attention map for Stage 7 Path Reconstruction
+        return self.stage_weight * x, impact

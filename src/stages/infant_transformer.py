@@ -14,69 +14,77 @@ class InfantTransformer(DevelopmentalTransformer):
     """
 
     def __init__(self):
+        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
+        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Infant"]
 
-        # Learned Grounding Projection (W in the patent logic)
+        # Calculate how many layers this stage owns based on config boundaries
+        # This removes the hardcoded '6' and respects the 48-layer stack.
+        num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
+
+        # 3. Dynamic Layer Allocation
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=nhead,
+                dim_feedforward=embed_dim * 4,
+                dropout=stage_cfg.get("dropout", 0.1)
+            ) for _ in range(num_stage_layers)
+        ])
+
+        # 4. Grounding Projection (W in the patent logic)
         self.grounding_proj = nn.Linear(embed_dim, embed_dim)
 
-        # Infant Refinement: 1-layer shallow refinement
-        self.refiner = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
-            nn.LayerNorm(embed_dim)
-        )
+        # 5. Output Refinement
+        self.refiner = nn.LayerNorm(embed_dim)
 
         self.epsilon_scale = stage_cfg["epsilon_scale"]
         self.plasticity_scale = stage_cfg["plasticity_scale"]
-        self.training_layers = stage_cfg["training_layers"]
-        self.trainable_layer_range = (0, self.training_layers)
-
-    def _set_trainable_layers(self):
-        start, num_layers = self.trainable_layer_range
-        for i, layer in enumerate(self.children()):
-            requires_grad = start <= i < (start + num_layers)
-            for param in layer.parameters():
-                param.requires_grad = requires_grad
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
         x: [seq_len, batch, dim]
-        centroid_addresses: [Fast, Mid, Slow] - Infant anchors to Slow (Index 2)
         """
-        self._set_trainable_layers()
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
+        # 1. TOPOLOGICAL GROUNDING
         if graph_matrix is not None:
-            # 1. Access Slow-Scale (Global) Centroid
-            # This is the "Immutable Truth" the infant is grounding against
+            # Initialize the centroid first
             if centroid_addresses and len(centroid_addresses) > 2:
                 graph_centroid = centroid_addresses[2]
             else:
-                graph_centroid = graph_matrix.mean(dim=0)
+                # Fallback: Compute global mean from the graph matrix
+                graph_centroid = graph_matrix
 
-            # 2. Stochastic Exploration (ε)
-            # High plasticity grounding allows the model to 'jitter' around the truth
+            # Now safely collapse dimensions to a single [Dim] vector
+            while graph_centroid.dim() > 1:
+                graph_centroid = graph_centroid.mean(dim=0)
+
+            # Stochastic Exploration (ε)
             if self.training:
                 epsilon = torch.randn_like(graph_centroid) * (self.epsilon_scale * Wi)
                 graph_centroid = graph_centroid + epsilon
 
-            # 3. Grounding Projection
-            # Projects global graph state into the current sequence context
+            # Project and Integrate
             anchored_ground = self.grounding_proj(graph_centroid)
 
-            # Integrate global context modulated by Wi (Plasticity)
-            x_context = x + (Wi * anchored_ground).unsqueeze(0).unsqueeze(0)
+            # Use view for clean 3D broadcasting: [1, 1, Dim]
+            context_contribution = (Wi * anchored_ground).view(1, 1, -1)
+            x_context = x + context_contribution
 
-            # 4. Comparative Geometric Divergence
-            # Monitoring how much the foundational grounding shifts the input tokens
+            # Comparative Geometric Divergence (Gamma)
             gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
-        # 5. Shallow Refinement
-        x = self.refiner(x) + x
+        # 2. TRANSFORMER PROCESSING
+        for layer in self.layers:
+            x = layer(x)
+
+        # 3. OUTPUT REFINEMENT
+        x = self.refiner(x)
 
         return self.stage_weight * x, gamma_divergence

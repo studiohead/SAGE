@@ -14,80 +14,79 @@ class TeenTransformer(DevelopmentalTransformer):
     """
 
     def __init__(self):
+        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
+        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Teen"]
 
-        # Competitive Gate: Projects internal state vs Graph Centroid
+        # Calculate dynamic layer count from config boundaries
+        num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
+
+        # 3. Dynamic Layer Allocation (The 48-layer stack slice)
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=nhead,
+                dim_feedforward=embed_dim * 4,
+                dropout=stage_cfg.get("dropout", 0.15)
+            ) for _ in range(num_stage_layers)
+        ])
+
+        # 4. Competitive Gate: Projects internal state vs Graph Centroid
         # Index 0: Internal Priority, Index 1: Graph/Centroid Priority
         self.gate_predictor = nn.Linear(embed_dim, 2)
 
-        # Deep Refinement: 5-layer reasoning depth
-        self.refiner = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 4),
-            nn.GELU(),
-            nn.Linear(embed_dim * 4, embed_dim),
-            nn.LayerNorm(embed_dim)
-        )
+        # 5. Output Refinement
+        self.refiner_norm = nn.LayerNorm(embed_dim)
 
         self.plasticity_scale = stage_cfg["plasticity_scale"]
-        self.training_layers = stage_cfg["training_layers"]
-        self.trainable_layer_range = (0, self.training_layers)
-
-    def _set_trainable_layers(self):
-        start, num_layers = self.trainable_layer_range
-        for i, layer in enumerate(self.children()):
-            requires_grad = start <= i < (start + num_layers)
-            for param in layer.parameters():
-                param.requires_grad = requires_grad
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
         x: [seq_len, batch, dim]
         centroid_addresses: List of scale addresses [Fast, Mid, Slow]
         """
-        self._set_trainable_layers()
         gamma = torch.tensor(1.0, device=x.device)
+        gate = None
 
         if graph_matrix is not None:
             # 1. Access Multi-Scale Anchor (Fast Scale)
-            # Teen logic focuses on immediate context alignment
             if centroid_addresses:
                 y_graph = centroid_addresses[0].unsqueeze(0).unsqueeze(0)
             else:
                 y_graph = graph_matrix.mean(dim=0).unsqueeze(0).unsqueeze(0)
 
             # 2. Discrete Stochastic Arbitration (Gumbel-Softmax)
-            # Wi acts as the temperature: Higher plasticity = more stochastic exploration
+            # Wi acts as the temperature (Tau): Higher plasticity = more stochastic exploration
             gate_logits = self.gate_predictor(x)
 
             if self.training:
-                # Tau (temperature) scales with plasticity (Wi)
                 gate = F.gumbel_softmax(gate_logits, tau=max(0.1, Wi), hard=True)
             else:
                 gate = F.softmax(gate_logits, dim=-1)
 
             # 3. Path Selection
             x_internal = x
-            # Align graph centroid to batch/sequence size
             x_anchored = y_graph.expand(x.size(0), x.size(1), -1)
 
             # Combine based on Gumbel Gate
             x_integrated = (gate[..., 0:1] * x_internal) + (gate[..., 1:2] * x_anchored)
 
-            # 4. Comparative Geometric Divergence
-            # Divergence is high when the gate forces a jump between internal and anchored states
+            # 4. Comparative Geometric Divergence (Gamma)
             divergence = F.mse_loss(x_integrated, x_internal)
-            gamma = 1.0 - torch.clamp(divergence, 0, 1)
+            gamma = divergence.detach()  # Used by SAGEContainer for confidence calculation
 
             x = self.norm(x_integrated)
 
-        # 5. Reasoning Pass
-        for _ in range(5):
-            x = self.refiner(x) + x
+        # 5. TRANSFORMER PROCESSING (Sliding Window Managed by Container)
+        for layer in self.layers:
+            x = layer(x)
 
-        # Return governed output and Impact trace (Gumbel decision map)
-        # Note: We return the gate map so the Auditor can see "Routing Breaches"
-        return self.stage_weight * x, gate
+        # 6. OUTPUT REFINEMENT
+        x = self.refiner_norm(x)
+
+        # Return governed output and the gate/impact trace
+        return self.stage_weight * x, gamma
