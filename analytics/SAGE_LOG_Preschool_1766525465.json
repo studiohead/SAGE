@@ -1,12 +1,12 @@
 [
     {
-        "timestamp": "2025-12-23T01:20:50.353772",
-        "stage": "Toddler",
-        "stage_idx": 1,
+        "timestamp": "2025-12-23T13:31:03.484301",
+        "stage": "Preschool",
+        "stage_idx": 2,
         "epoch": 0,
         "metrics": {
-            "loss": 0.137885,
-            "gamma_confidence": 0.7474,
+            "loss": 0.09872,
+            "gamma_confidence": 0.7482,
             "manifold_variance": 0.0,
             "manifold_radius": 0.0
         },
@@ -16,13 +16,13 @@
         }
     },
     {
-        "timestamp": "2025-12-23T01:20:50.510334",
-        "stage": "Toddler",
-        "stage_idx": 1,
+        "timestamp": "2025-12-23T13:31:03.908081",
+        "stage": "Preschool",
+        "stage_idx": 2,
         "epoch": 1,
         "metrics": {
-            "loss": 0.063533,
-            "gamma_confidence": 0.748,
+            "loss": 0.086312,
+            "gamma_confidence": 0.7472,
             "manifold_variance": 0.0,
             "manifold_radius": 0.0
         },
@@ -32,13 +32,13 @@
         }
     },
     {
-        "timestamp": "2025-12-23T01:20:50.667534",
-        "stage": "Toddler",
-        "stage_idx": 1,
+        "timestamp": "2025-12-23T13:31:04.329658",
+        "stage": "Preschool",
+        "stage_idx": 2,
         "epoch": 2,
         "metrics": {
-            "loss": 0.049059,
-            "gamma_confidence": 0.748,
+            "loss": 0.04843,
+            "gamma_confidence": 0.7471,
             "manifold_variance": 0.0,
             "manifold_radius": 0.0
         },
@@ -48,13 +48,13 @@
         }
     },
     {
-        "timestamp": "2025-12-23T01:20:50.827620",
-        "stage": "Toddler",
-        "stage_idx": 1,
+        "timestamp": "2025-12-23T13:31:04.755304",
+        "stage": "Preschool",
+        "stage_idx": 2,
         "epoch": 3,
         "metrics": {
-            "loss": 0.034008,
-            "gamma_confidence": 0.7473,
+            "loss": 0.041086,
+            "gamma_confidence": 0.7482,
             "manifold_variance": 0.0,
             "manifold_radius": 0.0
         },
@@ -64,13 +64,13 @@
         }
     },
     {
-        "timestamp": "2025-12-23T01:20:50.983599",
-        "stage": "Toddler",
-        "stage_idx": 1,
+        "timestamp": "2025-12-23T13:31:05.183077",
+        "stage": "Preschool",
+        "stage_idx": 2,
         "epoch": 4,
         "metrics": {
-            "loss": 0.014782,
-            "gamma_confidence": 0.7475,
+            "loss": 0.0383,
+            "gamma_confidence": 0.7482,
             "manifold_variance": 0.0,
             "manifold_radius": 0.0
         },

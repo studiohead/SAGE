@@ -89,6 +89,8 @@ class SAGEContainer(nn.Module):
                 param.requires_grad = True
             layer.train()
 
+        self.graph.ensure_stage_initialized(self.current_stage_idx)
+
     def forward(self, x, graph_matrix=None):
         stage_outputs = []
         min_confidence = 1.0
@@ -96,6 +98,8 @@ class SAGEContainer(nn.Module):
 
         if graph_matrix is None:
             graph_matrix = self.graph.get_graph_embedding_matrix()
+
+        seq_len_orig = x.size(0)  # store original sequence length
 
         # Iterate through stages up to the current developmental maturity
         for i, name in enumerate(self.stage_names):
@@ -105,32 +109,36 @@ class SAGEContainer(nn.Module):
             model = self.stages[name]
 
             # 1. TCR (Tombstone/Incineration/Retrieval) Logic for Higher Stages
-            if i >= 5: # Adult/Elder levels
+            x_aug = x
+            if i >= 5:  # Adult/Elder levels
                 memory_block = self.graph.retrieve_manifold_context(x.mean(0))
                 if memory_block.size(0) > 0:
                     mem_expanded = memory_block.unsqueeze(1).expand(-1, x.size(1), -1)
-                    x = torch.cat([x, mem_expanded], dim=0)
+                    x_aug = torch.cat([x, mem_expanded], dim=0)
 
             # 2. Process Abstraction Level
-            # Impact represents the geometric divergence (Gamma)
-            out, impact = model(x, graph_matrix, Wi=self.eta)
+            out, impact = model(x_aug, graph_matrix, Wi=self.eta)
+
+            # 3. Restore original sequence length before fusion
+            if out.size(0) != seq_len_orig:
+                out = out[:seq_len_orig]
+
             stage_outputs.append(out)
 
-            # 3. Confidence Tracking
-            # impact is a scalar or tensor representing how 'grounded' the reasoning is
+            # 4. Confidence Tracking
             current_gamma = 1.0 - torch.clamp(torch.as_tensor(impact), 0, 1).item()
             if current_gamma < min_confidence:
                 min_confidence = current_gamma
                 breach_category = "STRUCTURAL_ERROR" if i < 4 else "FACTUAL_DISPUTE"
 
-            # 4. Early Exit (Inference Optimization)
+            # 5. Early Exit (Inference Optimization)
             if not self.training and current_gamma > 0.98 and i > 1:
                 break
 
-        # 5. Hierarchical Fusion (Consensus of all active stages)
+        # 6. Hierarchical Fusion (Consensus of all active stages)
         fused_output = self.fusion(x, stage_outputs) if len(stage_outputs) > 1 else stage_outputs[0]
 
-        # 6. Remediation Triggering (Auditor Integration)
+        # 7. Remediation Triggering (Auditor Integration)
         if min_confidence < 0.5 and self.auditor and not self.training:
             self.dispatch_remediation_request(x, fused_output, min_confidence, breach_category)
 

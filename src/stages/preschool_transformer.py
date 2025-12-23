@@ -1,4 +1,3 @@
-# src/stages/preschool_transformer.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,25 +6,14 @@ from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 
 class PreschoolTransformer(DevelopmentalTransformer):
-    """
-    Stage 3: Global Saliency & Static Relevance.
-    Logic: y = x + W * sum(Softmax(G) * G)
-    Identifies globally relevant nodes guided by the Slow-Scale Anchor.
-    """
-
     def __init__(self):
-        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Preschool"]
-
-        # Calculate dynamic layer count (e.g., layers 8-12 = 4 layers)
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
-        # 3. Dynamic Layer Allocation
         self.layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -35,55 +23,58 @@ class PreschoolTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        # 4. Saliency Head: Projects Graph Nodes into Relevance Space
         self.saliency_proj = nn.Linear(embed_dim, embed_dim)
-        self.relevance_query = nn.Parameter(torch.randn(1, embed_dim))
-
-        # 5. Output Refinement
         self.refiner = nn.LayerNorm(embed_dim)
-
         self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
-        x: [seq_len, batch, dim]
-        centroid_addresses: [Fast, Mid, Slow] - Preschool uses Slow (Index 2)
+        x: [seq, batch, 128]
+        graph_matrix: Likely arriving as [8192] or [batch, 8192]
         """
         gamma_divergence = torch.tensor(0.0, device=x.device)
-        saliency_weights = None
 
-        # 1. GLOBAL SALIENCY INTEGRATION (Patent Logic)
         if graph_matrix is not None:
-            # Use the Slow-Scale Centroid (Stable Truth) to weight node importance
+            # 1. FORCE REALIGNMENT
+            # If we are getting a flattened 8192, we must reconstruct the node-space
+            # 8192 / 128 = 64 nodes.
+            working_graph = graph_matrix.view(-1, self.embed_dim)  # [64, 128]
+
+            # 2. ANCHOR ALIGNMENT
             if centroid_addresses and len(centroid_addresses) > 2:
                 anchor_slow = centroid_addresses[2]
+                if anchor_slow.numel() != self.embed_dim:
+                    anchor_slow = anchor_slow.view(-1, self.embed_dim).mean(dim=0)
             else:
-                anchor_slow = graph_matrix.mean(dim=0)
+                anchor_slow = working_graph.mean(dim=0)
 
-            # Compute Saliency (Relevance Logits)
-            # Dot product of Projected Graph and the Slow Anchor
-            G_projected = self.saliency_proj(graph_matrix)  # [num_nodes, dim]
-            relevance_logits = torch.matmul(G_projected, anchor_slow.unsqueeze(-1))  # [num_nodes, 1]
+            # 3. SALIENCY CALCULATION
+            # Project nodes: [64, 128] -> [64, 128]
+            G_projected = self.saliency_proj(working_graph)
 
-            # Saliency-weighted prioritization (Softmax)
+            # anchor_slow: [128] -> [128, 1) for matmul
+            # logits: [64, 1]
+            relevance_logits = torch.matmul(G_projected, anchor_slow.view(self.embed_dim, 1))
             saliency_weights = F.softmax(relevance_logits / (self.embed_dim ** 0.5), dim=0)
 
-            # Knowledge Integration (The "Essence" of the manifold)
-            focused_essence = torch.sum(graph_matrix * saliency_weights, dim=0)  # [dim]
+            # 4. KNOWLEDGE INTEGRATION
+            # G_projected: [64, 128], weights: [64, 1]
+            # essence: [128]
+            focused_essence = torch.sum(G_projected * saliency_weights, dim=0)
 
-            # Add essence to tokens, modulated by global plasticity (Wi)
-            x_context = x + (Wi * focused_essence).unsqueeze(0).unsqueeze(0)
+            # 5. BROADCAST PREP
+            # Explicitly force essence to [1, 1, 128]
+            essence_context = focused_essence.reshape(1, 1, self.embed_dim)
 
-            # Comparative Geometric Divergence (Gamma)
+            # 6. ADDITION
+            # a (128) + b (128)
+            x_context = x + (Wi * essence_context)
+
             gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
-        # 2. TRANSFORMER PROCESSING (Sliding Window Managed by Container)
         for layer in self.layers:
             x = layer(x)
 
-        # 3. OUTPUT REFINEMENT
         x = self.refiner(x)
-
-        # Return output and the divergence for monitoring
         return self.stage_weight * x, gamma_divergence

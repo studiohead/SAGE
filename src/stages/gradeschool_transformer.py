@@ -9,23 +9,19 @@ from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 class GradeschoolTransformer(DevelopmentalTransformer):
     """
     Stage 4: Structural Subspacing & Categorical Abstraction.
-    Logic: y = x + W * (G * W_proj)
+    Logic: y = x + Projected(G_nodes, centroid_mid)
     Learns to project the Graph Manifold into an internal categorical subspace.
     """
 
     def __init__(self):
-        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Gradeschool"]
-
-        # Calculate dynamic layer count from config boundaries
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
-        # 3. Dynamic Layer Allocation (Replaces manual refiner)
+        # Transformer stack
         self.layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -35,49 +31,55 @@ class GradeschoolTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        # 4. Subspace Projection (W_proj) - Rotates the manifold
-        self.subspace_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-
-        # 5. Integration Weight (W)
-        self.integration_weight = nn.Parameter(torch.ones(1) * 0.1)
-
-        # 6. Output Refinement
-        self.refiner_norm = nn.LayerNorm(embed_dim)
-
+        # Subspace projection (learn categorical axes)
+        self.subspace_proj = nn.Linear(embed_dim, embed_dim)
+        self.refiner = nn.LayerNorm(embed_dim)
         self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
         x: [seq_len, batch, dim]
-        centroid_addresses: [Fast, Mid, Slow] - Gradeschool uses Mid (Index 1)
+        graph_matrix: [nodes, batch, dim]
+        centroid_addresses: [fast, mid, slow]
         """
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
-        # 1. STRUCTURAL SUBSPACING (Patent Logic)
         if graph_matrix is not None:
-            # Access Mid-Scale Contextual Centroid (Paragraph-level context)
+            # 1. Use Mid-Scale Centroid for categorical alignment
             if centroid_addresses and len(centroid_addresses) > 1:
-                anchor_z = centroid_addresses[1]
+                anchor_mid = centroid_addresses[1]
             else:
-                anchor_z = graph_matrix.mean(dim=0)
+                anchor_mid = graph_matrix.mean(dim=0)  # [batch, dim]
 
-            # Linear Projection of the Manifold (W_proj)
-            # Aligns global graph knowledge with the stage's categorical space
-            projected_memory = self.subspace_proj(anchor_z)
+            # 2. Project node embeddings into categorical subspace
+            nodes_proj = self.subspace_proj(graph_matrix)  # [nodes, batch, dim]
 
-            # Knowledge Integration modulated by plasticity and learned weight
-            update_signal = (Wi * self.integration_weight * projected_memory).unsqueeze(0).unsqueeze(0)
-            x_integrated = x + update_signal
+            # 3. Compute attention weights from projected nodes to centroid
+            # anchor_mid: [batch, dim] -> [1, batch, dim] for broadcasting
+            anchor_exp = anchor_mid.unsqueeze(0)
+            attn_logits = torch.sum(nodes_proj * anchor_exp, dim=-1)  # [nodes, batch]
+            attn_weights = F.softmax(attn_logits / (x.size(-1) ** 0.5), dim=0)  # [nodes, batch]
 
-            # Comparative Geometric Divergence (Gamma)
-            gamma_divergence = F.mse_loss(x_integrated, x).detach()
-            x = self.norm(x_integrated)
+            # 4. Weighted aggregation of projected nodes
+            # nodes_proj: [nodes, batch, dim], attn_weights: [nodes, batch, 1]
+            weighted_nodes = nodes_proj * attn_weights.unsqueeze(-1)
+            subspace_context = weighted_nodes.sum(dim=0)  # [batch, dim]
 
-        # 2. TRANSFORMER PROCESSING (Aperture managed by SAGEContainer)
+            # 5. Broadcast to sequence dimension
+            subspace_context = subspace_context.unsqueeze(0)  # [1, batch, dim]
+
+            # 6. Integrate with input
+            x_context = x + Wi * subspace_context
+
+            # 7. Gamma divergence measures actual structural movement
+            gamma_divergence = F.mse_loss(x_context, x).detach()
+            x = self.norm(x_context)
+
+        # Transformer processing
         for layer in self.layers:
             x = layer(x)
 
-        # 3. OUTPUT REFINEMENT
-        x = self.refiner_norm(x)
+        # Final layer norm
+        x = self.refiner(x)
 
         return self.stage_weight * x, gamma_divergence

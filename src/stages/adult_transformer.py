@@ -50,45 +50,53 @@ class AdultTransformer(DevelopmentalTransformer):
         """
         Returns:
             output: [seq_len, batch, dim]
-            impact/trace: The attention map (Active Reasoning Path) for Stage 7.
+            impact/trace: The attention map for Stage 7.
         """
         attn_map = None
+        seq_len, batch_size, embed_dim = x.shape
 
-        # 1. CROSS-ATTENTION RETRIEVAL (Patent Logic)
         if graph_matrix is not None:
-            # Project graph into relational subspace
-            G_projected = self.graph_proj(graph_matrix)
+            # Collapse graph nodes into [batch, dim]
+            if graph_matrix.dim() > 2:
+                graph_collapsed = graph_matrix.mean(dim=0)
+            else:
+                graph_collapsed = graph_matrix
 
-            # Retrieval (Q=input tokens, K/V=Graph Manifold)
-            # x is [seq_len, batch, dim], k_v is [num_nodes, batch, dim]
-            k_v = G_projected.unsqueeze(1).expand(-1, x.size(1), -1)
+            # Project into relational subspace
+            G_projected = self.graph_proj(graph_collapsed)  # [batch, dim] or [1, dim]
+
+            # Ensure correct shape: [seq_len, batch, dim]
+            if G_projected.dim() == 1:
+                # single vector -> [1, batch, dim]
+                G_projected = G_projected.unsqueeze(0).expand(seq_len, batch_size, -1)
+            elif G_projected.dim() == 2:
+                # [batch, dim] -> [seq_len, batch, dim]
+                G_projected = G_projected.unsqueeze(0).expand(seq_len, -1, -1)
+            else:
+                # fallback: collapse extra dims
+                G_projected = G_projected.view(-1, embed_dim).unsqueeze(0).expand(seq_len, -1, -1)
 
             attn_out, attn_map = self.cross_attn(
                 query=x,
-                key=k_v,
-                value=k_v,
+                key=G_projected,
+                value=G_projected,
                 need_weights=True,
                 average_attn_weights=True
             )
 
-            # Modulate update by Global Plasticity (Wi)
             x = self.norm(x + (Wi * attn_out))
 
-        # 2. TRANSFORMER PROCESSING (Aperture managed by SAGEContainer)
+        # Transformer processing
         for layer in self.layers:
             x = layer(x)
 
-        # 3. OUTPUT REFINEMENT
         x = self.refiner_norm(x)
 
-        # 4. IMPACT CALCULATION (Confidence Signal)
-        # Low entropy = Targeted/Confident retrieval
+        # Compute impact
         if attn_map is not None:
             entropy = -torch.sum(attn_map * torch.log(attn_map + 1e-9), dim=-1).mean()
-            # Normalize impact score: 0 = high confidence, 1 = chaotic/uncertain
             impact = torch.clamp(entropy / 5.0, 0, 1)
         else:
             impact = torch.tensor(0.5, device=x.device)
 
-        # Return governed output and the attention map for Stage 7 Path Reconstruction
         return self.stage_weight * x, impact

@@ -14,18 +14,13 @@ class TeenTransformer(DevelopmentalTransformer):
     """
 
     def __init__(self):
-        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Teen"]
-
-        # Calculate dynamic layer count from config boundaries
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
-        # 3. Dynamic Layer Allocation (The 48-layer stack slice)
         self.layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -35,58 +30,52 @@ class TeenTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        # 4. Competitive Gate: Projects internal state vs Graph Centroid
-        # Index 0: Internal Priority, Index 1: Graph/Centroid Priority
+        # Gumbel gate predictor: 0 = internal, 1 = anchor/graph
         self.gate_predictor = nn.Linear(embed_dim, 2)
-
-        # 5. Output Refinement
         self.refiner_norm = nn.LayerNorm(embed_dim)
-
         self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
-        x: [seq_len, batch, dim]
+        x: [seq_len, batch, embed_dim]
         centroid_addresses: List of scale addresses [Fast, Mid, Slow]
         """
-        gamma = torch.tensor(1.0, device=x.device)
-        gate = None
+        gamma = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None:
-            # 1. Access Multi-Scale Anchor (Fast Scale)
-            if centroid_addresses:
-                y_graph = centroid_addresses[0].unsqueeze(0).unsqueeze(0)
+            seq_len, batch, embed_dim = x.shape
+
+            # 1. Use Fast-scale centroid or mean graph
+            if centroid_addresses and len(centroid_addresses) > 0:
+                anchor = centroid_addresses[0]
             else:
-                y_graph = graph_matrix.mean(dim=0).unsqueeze(0).unsqueeze(0)
+                anchor = graph_matrix.mean(dim=0)  # [batch, embed_dim]
 
-            # 2. Discrete Stochastic Arbitration (Gumbel-Softmax)
-            # Wi acts as the temperature (Tau): Higher plasticity = more stochastic exploration
-            gate_logits = self.gate_predictor(x)
+            # Ensure shape: [1, batch, embed_dim] for broadcast
+            anchor_context = anchor.unsqueeze(0)
+            if anchor_context.shape[1] != batch:
+                anchor_context = anchor_context.expand(1, batch, embed_dim)
+            anchor_context = anchor_context.expand(seq_len, batch, embed_dim)
 
+            # 2. Gumbel-softmax gate
+            gate_logits = self.gate_predictor(x)  # [seq, batch, 2]
             if self.training:
                 gate = F.gumbel_softmax(gate_logits, tau=max(0.1, Wi), hard=True)
             else:
                 gate = F.softmax(gate_logits, dim=-1)
 
-            # 3. Path Selection
-            x_internal = x
-            x_anchored = y_graph.expand(x.size(0), x.size(1), -1)
+            # 3. Integrate paths with proper broadcasting
+            x_integrated = gate[..., 0:1] * x + gate[..., 1:2] * anchor_context
 
-            # Combine based on Gumbel Gate
-            x_integrated = (gate[..., 0:1] * x_internal) + (gate[..., 1:2] * x_anchored)
-
-            # 4. Comparative Geometric Divergence (Gamma)
-            divergence = F.mse_loss(x_integrated, x_internal)
-            gamma = divergence.detach()  # Used by SAGEContainer for confidence calculation
-
+            # 4. Comparative Geometric Divergence
+            gamma = F.mse_loss(x_integrated, x).detach()
             x = self.norm(x_integrated)
 
-        # 5. TRANSFORMER PROCESSING (Sliding Window Managed by Container)
+        # 5. Transformer stack
         for layer in self.layers:
             x = layer(x)
 
-        # 6. OUTPUT REFINEMENT
+        # 6. Output refinement
         x = self.refiner_norm(x)
 
-        # Return governed output and the gate/impact trace
         return self.stage_weight * x, gamma

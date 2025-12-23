@@ -19,7 +19,7 @@ class ConceptNode:
 
 
 class SharedConceptGraph(nn.Module):
-    def __init__(self, embedding_dim=128, lambda_ewma=0.1):
+    def __init__(self, embedding_dim=128, lambda_ewma=0.1, promotion_threshold=0.7):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.nodes = {}
@@ -27,6 +27,7 @@ class SharedConceptGraph(nn.Module):
         self.anchor_tensor = {}  # The 'Z' Map (Topological Anchors)
         self.lambda_ewma = lambda_ewma  # EWMA Decay for temporal drift
         self.quarantined_centroids = []  # List of addresses flagged by Auditor
+        self.promotion_threshold = promotion_threshold  # threshold for "promotable" nodes
 
     # --- TOPOLOGICAL ANCHORING (EWMA) ---
 
@@ -212,3 +213,25 @@ class SharedConceptGraph(nn.Module):
             # Periodic EWMA update
             if torch.rand(1).item() > 0.95:
                 self.update_local_centroid(uid_i)
+
+    def ensure_stage_initialized(self, stage_idx):
+        """
+        Ensures all nodes are ready for a new stage.
+        If a node has sufficient alignment_score (plasticity) and is not tombstoned, it is promoted.
+        """
+        for node_id in self.node_order:
+            node = self.nodes[node_id]
+
+            # Skip nodes already promoted or tombstoned
+            if getattr(node, "stage_idx", -1) >= stage_idx or node.is_tombstoned:
+                continue
+
+            # Promote if alignment_score exceeds threshold
+            if node.alignment_score >= self.promotion_threshold:
+                node.stage_idx = stage_idx
+
+        # Initialize anchor for this stage if it does not exist
+        if stage_idx not in getattr(self, "stage_anchors", {}):
+            if not hasattr(self, "stage_anchors"):
+                self.stage_anchors = {}
+            self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim)
