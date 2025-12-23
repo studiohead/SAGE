@@ -1,5 +1,5 @@
 # SAGE: Self-Actuating Governance Engine
-### A Multistage Developmental Cognitive Architecture with Asynchronous Topological Incineration
+### A Multistage Developmental Cognitive Architecture with Asynchronous Topological Incineration, Null-Space Rotation & Null-Space Convergence
 
 [![License: Proprietary](https://img.shields.io/badge/License-All_Rights_Reserved-red.svg)](LICENSE)
 [![Status: Patent_Pending](https://img.shields.io/badge/Intellectual_Property-Patent_Pending-blue.svg)](PATENT_NOTICE.md)

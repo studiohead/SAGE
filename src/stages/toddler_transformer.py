@@ -1,13 +1,16 @@
+# src/stages/toddler_transformer.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
-from ..config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+
 
 class ToddlerTransformer(DevelopmentalTransformer):
     """
     Stage 2: Relational Orientation & Contextual Filtering.
-    Uses configurable hyperparameters from STAGE_HYPERPARAMS['Toddler'].
+    Logic: y = x + (W ⊙ mean(G))
+    Uses Element-wise Hadamard gating to filter inputs based on Graph Centroids.
     """
 
     def __init__(self):
@@ -17,10 +20,10 @@ class ToddlerTransformer(DevelopmentalTransformer):
 
         stage_cfg = STAGE_HYPERPARAMS["Toddler"]
 
-        # Relational Bias
-        self.relational_bias = nn.Parameter(torch.zeros(embed_dim))
+        # Relational Bias (W in the patent logic)
+        self.relational_weight = nn.Parameter(torch.randn(embed_dim))
 
-        # Toddler Refinement: 2-layer depth
+        # Toddler Refinement: 2-layer shallow depth
         self.refiner = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -28,57 +31,54 @@ class ToddlerTransformer(DevelopmentalTransformer):
             nn.LayerNorm(embed_dim)
         )
 
-        # Load hyperparameters from config
         self.epsilon_scale = stage_cfg["epsilon_scale"]
-        self.training_layers = stage_cfg["training_layers"]
-        self.learning_rate = stage_cfg["learning_rate"]
-        self.weight_decay = stage_cfg["weight_decay"]
-        self.dropout = stage_cfg["dropout"]
-        self.gradient_clip = stage_cfg["gradient_clip"]
         self.plasticity_scale = stage_cfg["plasticity_scale"]
-        self.scheduler_cfg = stage_cfg["scheduler"]
-
-        # By default, train only the first N layers
+        self.training_layers = stage_cfg["training_layers"]
         self.trainable_layer_range = (0, self.training_layers)
 
     def _set_trainable_layers(self):
-        """
-        Enables gradients for layers in trainable_layer_range and freezes the rest.
-        """
         start, num_layers = self.trainable_layer_range
-        layers = list(self.children())
-        total_layers = len(layers)
-        end = min(start + num_layers, total_layers)
-
-        for i, layer in enumerate(layers):
-            requires_grad = start <= i < end
+        for i, layer in enumerate(self.children()):
+            requires_grad = start <= i < (start + num_layers)
             for param in layer.parameters():
                 param.requires_grad = requires_grad
 
-    def forward(self, x, graph_matrix, Wi=1.0):
-        # Apply trainable layers selection
+    def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
+        """
+        x: [seq_len, batch, dim]
+        centroid_addresses: [Fast, Mid, Slow] - Toddler anchors to Mid (Index 1)
+        """
         self._set_trainable_layers()
-
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None:
-            # Compute the global centroid of the graph
-            graph_centroid = graph_matrix.mean(dim=0)
+            # 1. Access Mid-Scale Contextual Centroid
+            if centroid_addresses and len(centroid_addresses) > 1:
+                graph_centroid = centroid_addresses[1]
+            else:
+                graph_centroid = graph_matrix.mean(dim=0)
 
+            # 2. Stochastic Grounding (Epsilon Noise)
+            # High in Toddler stage (0.08) to encourage exploration of the graph manifold
             if self.training:
                 epsilon = torch.randn_like(graph_centroid) * (self.epsilon_scale * Wi)
                 graph_centroid = graph_centroid + epsilon
 
-            # Stage 2 Hadamard Gating
-            context_filter = torch.sigmoid(graph_centroid + self.relational_bias)
-            x_gated = x * context_filter
-            x_context = x + (Wi * x_gated)
+            # 3. Element-wise Hadamard Gating (Patent Logic)
+            # Learns to mask specific dimensions of the embedding space
+            context_filter = torch.sigmoid(graph_centroid * self.relational_weight)
 
-            gamma_divergence = (x_context - x).pow(2).mean().detach()
+            # Apply gated context to input tokens
+            # Wi (Plasticity) dictates how much the gated signal influences the state
+            x_context = x + (Wi * (x * context_filter.unsqueeze(0).unsqueeze(0)))
+
+            # 4. Comparative Geometric Divergence
+            gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
-        # Toddler 2-layer refinement
+        # 5. Toddler 2-layer shallow refinement
         for _ in range(2):
             x = self.refiner(x) + x
 
+        # Return output and the filter mask for Auditor monitoring
         return self.stage_weight * x, gamma_divergence

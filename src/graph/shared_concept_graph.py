@@ -1,3 +1,4 @@
+# src/graph/shared_concept_graph.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,6 +26,7 @@ class SharedConceptGraph(nn.Module):
         self.node_order = []
         self.anchor_tensor = {}  # The 'Z' Map (Topological Anchors)
         self.lambda_ewma = lambda_ewma  # EWMA Decay for temporal drift
+        self.quarantined_centroids = []  # List of addresses flagged by Auditor
 
     # --- TOPOLOGICAL ANCHORING (EWMA) ---
 
@@ -47,6 +49,32 @@ class SharedConceptGraph(nn.Module):
 
         # Apply EWMA update
         self.anchor_tensor[node_id] = (1.0 - self.lambda_ewma) * z_t + self.lambda_ewma * c_v_new
+
+    def is_node_in_centroid_range(self, node_id, centroid_address, radius=0.7):
+        """
+        AUDITOR UTILITY: Checks if node is within a conceptual radius of a breach.
+        Uses Euclidean distance in Z-space.
+        """
+        if node_id not in self.anchor_tensor:
+            return False
+        z_vec = self.anchor_tensor[node_id].to(centroid_address.device)
+        return torch.norm(z_vec - centroid_address) < radius
+
+    def get_graph_embedding_matrix(self):
+        """
+        Returns a stacked tensor of all embeddings for stage processing.
+        Applies alignment_score and filters tombstoned nodes.
+        """
+        embs = []
+        for nid in self.node_order:
+            node = self.nodes[nid]
+            if node.is_tombstoned:
+                # Neutral representation to maintain sequence indices
+                embs.append(torch.zeros(self.embedding_dim, device=node.embedding.device))
+            else:
+                embs.append(node.embedding * node.alignment_score)
+
+        return torch.stack(embs) if embs else torch.zeros((1, self.embedding_dim))
 
     # --- REMEDIATION: ABLATIVE ZEROING ---
 
@@ -105,6 +133,18 @@ class SharedConceptGraph(nn.Module):
             node.tombstone_key = None
             self.update_local_centroid(node_id)
 
+    # --- TOPOLOGICAL CLEANUP (AUDITOR STEP 4) ---
+
+    def delete_centroid_coordinate(self, address):
+        """Physically removes coordinate anchors from Z-Map after Incineration."""
+        keys_to_del = [k for k, v in self.anchor_tensor.items() if torch.equal(v, address)]
+        for k in keys_to_del:
+            del self.anchor_tensor[k]
+
+    def mark_centroid_as_quarantined(self, address):
+        """Adds a coordinate to the TCR blacklist for Stage 5+ exclusion."""
+        self.quarantined_centroids.append(address.detach().clone())
+
     # --- O(1) MANIFOLD RETRIEVAL (TCR) ---
 
     def retrieve_manifold_context(self, current_latent, top_k=5):
@@ -117,6 +157,11 @@ class SharedConceptGraph(nn.Module):
         # Radius search via cosine similarity in Z-space
         scored_anchors = []
         for cid, z_vec in self.anchor_tensor.items():
+            # Check if this centroid is globally quarantined
+            is_quarantined = any(torch.norm(z_vec - q) < 0.1 for q in self.quarantined_centroids)
+            if is_quarantined:
+                continue
+
             sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0).to(query_coord.device))
             scored_anchors.append((cid, sim.item()))
 

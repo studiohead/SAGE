@@ -1,4 +1,4 @@
-# developmental_transformer_config.py
+# /config/config.py
 
 # --- Core model structure (shared across all stages) ---
 SHARED_MODEL_CONFIG = {

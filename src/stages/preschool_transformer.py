@@ -1,13 +1,16 @@
+# src/stages/preschool_transformer.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
-from ..config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+
 
 class PreschoolTransformer(DevelopmentalTransformer):
     """
     Stage 3: Global Saliency & Static Relevance.
-    Uses configurable hyperparameters from STAGE_HYPERPARAMS['Preschool'].
+    Logic: y = x + W * sum(Softmax(G) * G)
+    Identifies globally relevant nodes guided by the Slow-Scale Anchor.
     """
 
     def __init__(self):
@@ -17,10 +20,11 @@ class PreschoolTransformer(DevelopmentalTransformer):
 
         stage_cfg = STAGE_HYPERPARAMS["Preschool"]
 
-        # Saliency Head: identifies globally relevant nodes
-        self.saliency_head = nn.Linear(embed_dim, 1)
+        # Saliency Head: Projects Graph Nodes into Relevance Space
+        self.saliency_proj = nn.Linear(embed_dim, embed_dim)
+        self.relevance_query = nn.Parameter(torch.randn(1, embed_dim))
 
-        # Preschool Refinement: 3-layer depth
+        # Preschool Refinement: 3-layer depth for conceptual grounding
         self.refiner = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 2),
             nn.GELU(),
@@ -28,54 +32,55 @@ class PreschoolTransformer(DevelopmentalTransformer):
             nn.LayerNorm(embed_dim)
         )
 
-        # Load hyperparameters from config
-        self.epsilon_scale = stage_cfg["epsilon_scale"]
-        self.training_layers = stage_cfg["training_layers"]
-        self.learning_rate = stage_cfg["learning_rate"]
-        self.weight_decay = stage_cfg["weight_decay"]
-        self.dropout = stage_cfg["dropout"]
-        self.gradient_clip = stage_cfg["gradient_clip"]
         self.plasticity_scale = stage_cfg["plasticity_scale"]
-        self.scheduler_cfg = stage_cfg["scheduler"]
-
-        # By default, train only the first N layers
+        self.training_layers = stage_cfg["training_layers"]
         self.trainable_layer_range = (0, self.training_layers)
 
     def _set_trainable_layers(self):
-        """
-        Enables gradients for layers in trainable_layer_range and freezes the rest.
-        """
         start, num_layers = self.trainable_layer_range
-        layers = list(self.children())
-        total_layers = len(layers)
-        end = min(start + num_layers, total_layers)
-
-        for i, layer in enumerate(layers):
-            requires_grad = start <= i < end
+        for i, layer in enumerate(self.children()):
+            requires_grad = start <= i < (start + num_layers)
             for param in layer.parameters():
                 param.requires_grad = requires_grad
 
-    def forward(self, x, graph_matrix, Wi=1.0):
-        # Apply trainable layers selection
+    def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
+        """
+        x: [seq_len, batch, dim]
+        centroid_addresses: [Fast, Mid, Slow] - Preschool uses Slow (Index 2)
+        """
         self._set_trainable_layers()
-
         gamma_divergence = torch.tensor(0.0, device=x.device)
+        saliency_weights = None
 
         if graph_matrix is not None:
-            # Compute global saliency
-            relevance_logits = self.saliency_head(graph_matrix)
-            saliency_weights = F.softmax(relevance_logits, dim=0)
-            focused_essence = torch.sum(graph_matrix * saliency_weights, dim=0)
+            # 1. Anchor-Guided Relevance
+            # Use the Slow-Scale Centroid (Stable Truth) to weight node importance
+            if centroid_addresses and len(centroid_addresses) > 2:
+                anchor_slow = centroid_addresses[2]
+            else:
+                anchor_slow = graph_matrix.mean(dim=0)
 
-            # Knowledge integration
-            x_context = x + (Wi * focused_essence)
+            # 2. Compute Saliency (Relevance Logits)
+            # Dot product of Projected Graph and the Slow Anchor
+            G_projected = self.saliency_proj(graph_matrix)  # [num_nodes, dim]
+            relevance_logits = torch.matmul(G_projected, anchor_slow.unsqueeze(-1))  # [num_nodes, 1]
 
-            # Passive witness monitoring
-            gamma_divergence = (x_context - x).pow(2).mean().detach()
+            # Saliency-weighted prioritization (Softmax)
+            saliency_weights = F.softmax(relevance_logits / (self.embed_dim ** 0.5), dim=0)
+
+            # 3. Knowledge Integration (The "Essence" of the manifold)
+            focused_essence = torch.sum(graph_matrix * saliency_weights, dim=0)  # [dim]
+
+            # Add essence to tokens, modulated by plasticity (Wi)
+            x_context = x + (Wi * focused_essence).unsqueeze(0).unsqueeze(0)
+
+            # 4. Comparative Geometric Divergence
+            gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
-        # Conceptual refinement (3-layer)
+        # 5. Conceptual Refinement (3-layer)
         for _ in range(3):
             x = self.refiner(x) + x
 
-        return self.stage_weight * x, gamma_divergence
+        # Return output and the saliency map for Auditor forensic tracking
+        return self.stage_weight * x, saliency_weights
