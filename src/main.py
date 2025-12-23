@@ -220,6 +220,7 @@ def main():
     parser.add_argument("--stage", default="Infant")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--load", type=str)
+    parser.add_argument("--up_to_stage", default=None, help="Train from current stage up to this stage (inclusive)")
     args = parser.parse_args()
 
     analytics = SAGEAnalyticsEngine()
