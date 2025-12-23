@@ -1,3 +1,4 @@
+# src/monitoring/sage_auditor.py
 import queue
 import threading
 import torch
@@ -58,6 +59,9 @@ class SageAuditor:
 
                 self.breach_queue.task_done()
             except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"SageAuditor internal error: {e}")
                 continue
             except Exception as e:
                 # Log internal auditor errors here to maintain system stability

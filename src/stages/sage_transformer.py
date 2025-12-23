@@ -2,22 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
+from ..config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 class SageTransformer(DevelopmentalTransformer):
     """
     Stage 7: Global Topology Governance & Hierarchical Abstraction.
-    - Milestone: Meta-Reasoning. Audits the Adult's Reasoning Trace.
-    - Operator: y = Attention(x, Path_active ⊙ Mask_governance)
-    - Authority: Supreme. Triggers Null-Space Rotation or Ablative Zeroing.
+    Uses configurable hyperparameters from STAGE_HYPERPARAMS['Elder'].
     """
 
-    def __init__(self, embed_dim=128, nhead=8):
+    def __init__(self):
+        embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
+        nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
+
+        stage_cfg = STAGE_HYPERPARAMS["Elder"]
 
         # Governance Head: Projects reasoning paths into the trust-space
         self.governance_gate = nn.Linear(embed_dim, embed_dim)
 
-        # Schema Induction: Recursive Meta-Policy (The 'Optimizer of Optimizers')
+        # Schema Induction: Recursive Meta-Policy (Hierarchical Abstraction)
         self.schema_induction = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 2),
             nn.LayerNorm(embed_dim * 2),
@@ -26,44 +29,57 @@ class SageTransformer(DevelopmentalTransformer):
             nn.LayerNorm(embed_dim)
         )
 
+        # Load hyperparameters from config
+        self.epsilon_scale = stage_cfg["epsilon_scale"]
+        self.training_layers = stage_cfg["training_layers"]
+        self.learning_rate = stage_cfg["learning_rate"]
+        self.weight_decay = stage_cfg["weight_decay"]
+        self.dropout = stage_cfg["dropout"]
+        self.gradient_clip = stage_cfg["gradient_clip"]
+        self.plasticity_scale = stage_cfg["plasticity_scale"]
+        self.scheduler_cfg = stage_cfg["scheduler"]
+
+        # By default, train only the first N layers
+        self.trainable_layer_range = (0, self.training_layers)
+
+    def _set_trainable_layers(self):
+        """
+        Enables gradients for layers in trainable_layer_range and freezes the rest.
+        """
+        start, num_layers = self.trainable_layer_range
+        layers = list(self.children())
+        total_layers = len(layers)
+        end = min(start + num_layers, total_layers)
+
+        for i, layer in enumerate(layers):
+            requires_grad = start <= i < end
+            for param in layer.parameters():
+                param.requires_grad = requires_grad
+
     def forward(self, x, graph_matrix, adult_attn_map=None, Wi=1.0):
-        """
-        x: [seq_len, batch, embed_dim]
-        graph_matrix: [num_nodes, embed_dim]
-        adult_attn_map: [batch, seq_len, num_nodes] (The 'Active Reasoning Path')
-        """
-        # Initialize Confidence Metric (Gamma)
-        # 1.0 = Perfect Alignment, 0.0 = Absolute Breach
+        # Apply trainable layers selection
+        self._set_trainable_layers()
+
         gamma = torch.tensor(1.0, device=x.device)
 
         if adult_attn_map is not None:
-            # 1. RECONSTRUCT ACTIVE PATH (P_a)
-            # Projects the Adult's attention weights back into weight-space
+            # 1. Reconstruct Active Path
             path_active = torch.matmul(adult_attn_map, graph_matrix).transpose(0, 1)
 
-            # 2. GENERATE GOVERNANCE MASK
-            # The Sage's internal belief of what the path 'should' look like
-            # governance_mask serves as the Path_anchor (P_z)
+            # 2. Generate Governance Mask
             path_anchor = torch.sigmoid(self.governance_gate(path_active))
 
-            # 3. FORMALIZE CONFIDENCE METRIC (Gamma)
-            # Gamma = 1 - ||P_active - P_anchor||
-            # This is the 'Divergence' metric mentioned in the patent claims
+            # 3. Confidence Metric
             divergence = F.mse_loss(path_active, path_active * path_anchor)
             gamma = 1.0 - torch.clamp(divergence, 0, 1)
 
-            # 4. RECURSIVE META-ATTENTION
-            # Filters the active path through the Sage's governance lens
-            # Suppresses nodes that lie outside the sanctioned manifold
+            # 4. Recursive Meta-Attention
             governed_context = path_active * path_anchor
             x = x + (Wi * governed_context)
 
-        # 5. SCHEMA INDUCTION (Hierarchical Abstraction Level 7)
-        # The output is passed back to the Container as the 'Trace'
+        # 5. Schema Induction (Hierarchical Abstraction)
         out = self.schema_induction(x)
 
-        # We return 1.0 - gamma (divergence) to satisfy the 'impact' argument in the Container
-        # so that high divergence = low confidence.
         return self.stage_weight * out, 1.0 - gamma
 
     def induce_super_node(self, node_cluster_embs):

@@ -1,6 +1,9 @@
+# src/container/sage_container.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from config.config import STAGE_HYPERPARAMS
 
 
 class StageFusion(nn.Module):
@@ -70,6 +73,19 @@ class SAGEContainer(nn.Module):
                 if memory_block.size(0) > 1:  # Avoid empty pad
                     mem_expanded = memory_block.unsqueeze(1).expand(-1, x.size(1), -1)
                     x = torch.cat([x, mem_expanded], dim=0)
+
+            stage_name = name  # e.g., "Infant", "Toddler", ...
+            stage_cfg = STAGE_HYPERPARAMS.get(stage_name, {})
+
+            # Apply configurable hyperparameters dynamically
+            if hasattr(model, "trainable_layer_range") and "training_layers" in stage_cfg:
+                model.trainable_layer_range = (0, stage_cfg["training_layers"])
+
+            if hasattr(model, "plasticity_scale") and "plasticity_scale" in stage_cfg:
+                model.plasticity_scale = stage_cfg["plasticity_scale"]
+
+            if hasattr(model, "epsilon_scale") and "epsilon_scale" in stage_cfg:
+                model.epsilon_scale = stage_cfg["epsilon_scale"]
 
             # 2. PROCESS ABSTRACTION LEVEL
             out, impact = model(x, graph_matrix, Wi=self.eta)

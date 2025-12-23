@@ -64,6 +64,7 @@ class SharedConceptGraph(nn.Module):
             node.alignment_score = 0.0  # Scar tissue (inhibits Hebbian growth)
             node.gradient_mask = 0.0  # Freezes weight at zero permanently
             node.is_tombstoned = False
+            node.tombstone_key = None
             self.update_local_centroid(node_id)
 
     # --- REMEDIATION: NULL-SPACE ROTATION ---
@@ -78,9 +79,7 @@ class SharedConceptGraph(nn.Module):
             node.tombstone_key = r_tomb
 
             with torch.no_grad():
-                # y = W * R_tomb
-                # Guaranteed dot-product convergence of 0 against active queries
-                displaced_weight = torch.matmul(node.embedding.data, r_tomb)
+                displaced_weight = torch.matmul(node.embedding.data, r_tomb.to(node.embedding.device))
                 node.embedding.copy_(displaced_weight)
 
             node.is_tombstoned = True
@@ -99,7 +98,7 @@ class SharedConceptGraph(nn.Module):
             # Orthogonal Restoration: R^T
             inverse_r = node.tombstone_key.t()
             with torch.no_grad():
-                node.embedding.copy_(torch.matmul(node.embedding.data, inverse_r))
+                node.embedding.copy_(torch.matmul(node.embedding.data, inverse_r.to(node.embedding.device)))
 
             node.is_tombstoned = False
             node.alignment_score = 1.0  # Restore plasticity
@@ -118,7 +117,7 @@ class SharedConceptGraph(nn.Module):
         # Radius search via cosine similarity in Z-space
         scored_anchors = []
         for cid, z_vec in self.anchor_tensor.items():
-            sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0))
+            sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0).to(query_coord.device))
             scored_anchors.append((cid, sim.item()))
 
         # Select top-k manifolds
@@ -129,10 +128,10 @@ class SharedConceptGraph(nn.Module):
             node = self.nodes[cid]
             # Governance Gate: Skip if confidence is low, scarred, or tombstoned
             if sim_score > 0.7 and node.alignment_score > 0.1 and not node.is_tombstoned:
-                context_tensors.append(node.embedding)
+                context_tensors.append(node.embedding.to(query_coord.device))
 
         if not context_tensors:
-            return torch.zeros((1, self.embedding_dim)).to(current_latent.device)
+            return torch.zeros((1, self.embedding_dim), device=query_coord.device)
 
         return torch.stack(context_tensors)
 
@@ -142,11 +141,11 @@ class SharedConceptGraph(nn.Module):
         """
         Updates relational weights with Scar-Tissue and Null-Space guardrails.
         """
-        if len(self.node_order) < 2 or attention_map is None: return
+        if len(self.node_order) < 2 or attention_map is None:
+            return
 
         # Normalize attention for graph update
-        # [num_nodes, num_nodes]
-        avg_att = attention_map.mean(dim=0)
+        avg_att = attention_map.mean(dim=0)  # [num_nodes, num_nodes]
 
         for i, uid_i in enumerate(self.node_order):
             node_i = self.nodes[uid_i]
@@ -160,11 +159,10 @@ class SharedConceptGraph(nn.Module):
                     continue
 
                 # Hebbian delta modulated by node alignment (trust)
-                delta = stage_plasticity * node_i.alignment_score * avg_att[i, j].item()
+                delta = stage_plasticity * node_i.alignment_score * avg_att[i, j]
 
                 if delta > 0.01:
-                    current_w = node_i.connections.get(uid_j, 0.0)
-                    node_i.connections[uid_j] = current_w + delta
+                    node_i.connections[uid_j] = node_i.connections.get(uid_j, 0.0) + delta
 
             # Periodic EWMA update
             if torch.rand(1).item() > 0.95:

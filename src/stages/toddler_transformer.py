@@ -2,23 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
+from ..config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 class ToddlerTransformer(DevelopmentalTransformer):
     """
     Stage 2: Relational Orientation & Contextual Filtering.
-    - Operator: y = x + (Wi * (x ⊙ Sigmoid(mean(G) + b)))
-    - Milestone: Elementary Gating based on Topological Resonance.
-    - Feature: 2-layer refinement for basic relational stability.
+    Uses configurable hyperparameters from STAGE_HYPERPARAMS['Toddler'].
     """
 
-    def __init__(self, embed_dim=128, nhead=8):
+    def __init__(self):
+        embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
+        nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # Relational Bias: Adjusts the sensitivity of the Hadamard filter.
-        # This allows the model to develop 'preferences' for specific manifolds.
+        stage_cfg = STAGE_HYPERPARAMS["Toddler"]
+
+        # Relational Bias
         self.relational_bias = nn.Parameter(torch.zeros(embed_dim))
 
-        # Toddler Refinement: 2-layer depth for early feature stabilization.
+        # Toddler Refinement: 2-layer depth
         self.refiner = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
@@ -26,39 +28,57 @@ class ToddlerTransformer(DevelopmentalTransformer):
             nn.LayerNorm(embed_dim)
         )
 
+        # Load hyperparameters from config
+        self.epsilon_scale = stage_cfg["epsilon_scale"]
+        self.training_layers = stage_cfg["training_layers"]
+        self.learning_rate = stage_cfg["learning_rate"]
+        self.weight_decay = stage_cfg["weight_decay"]
+        self.dropout = stage_cfg["dropout"]
+        self.gradient_clip = stage_cfg["gradient_clip"]
+        self.plasticity_scale = stage_cfg["plasticity_scale"]
+        self.scheduler_cfg = stage_cfg["scheduler"]
+
+        # By default, train only the first N layers
+        self.trainable_layer_range = (0, self.training_layers)
+
+    def _set_trainable_layers(self):
+        """
+        Enables gradients for layers in trainable_layer_range and freezes the rest.
+        """
+        start, num_layers = self.trainable_layer_range
+        layers = list(self.children())
+        total_layers = len(layers)
+        end = min(start + num_layers, total_layers)
+
+        for i, layer in enumerate(layers):
+            requires_grad = start <= i < end
+            for param in layer.parameters():
+                param.requires_grad = requires_grad
+
     def forward(self, x, graph_matrix, Wi=1.0):
-        """
-        x: [seq_len, batch, embed_dim]
-        graph_matrix: [num_nodes, embed_dim]
-        """
-        # Confidence Divergence Tracking
+        # Apply trainable layers selection
+        self._set_trainable_layers()
+
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None:
-            # 1. RETRIEVE GLOBAL MEAN FIELD
-            # Toddler stage sees the graph as a single, uniform 'feeling' or 'field'.
-            graph_centroid = graph_matrix.mean(dim=0) # [embed_dim]
+            # Compute the global centroid of the graph
+            graph_centroid = graph_matrix.mean(dim=0)
 
-            # 2. HADAMARD GATING (The Stage 2 Operator)
-            # This implements the patent claim: y = x + (Wi ⊙ mean(G))
-            # The sigmoid turns the graph centroid into a 'Binary-Like' filter.
-            # Dimensions that are high in the graph 'open' the gate for input x.
+            if self.training:
+                epsilon = torch.randn_like(graph_centroid) * (self.epsilon_scale * Wi)
+                graph_centroid = graph_centroid + epsilon
+
+            # Stage 2 Hadamard Gating
             context_filter = torch.sigmoid(graph_centroid + self.relational_bias)
-
-            # Element-wise modulation (Topological Resonance)
             x_gated = x * context_filter
             x_context = x + (Wi * x_gated)
 
-            # 3. PASSIVE WITNESS MONITORING
-            # Measures how much the input 'vibrates' with the graph manifold.
-            # If the filter is zero (Ablated), current_impact will be 0.0.
             gamma_divergence = (x_context - x).pow(2).mean().detach()
-
             x = self.norm(x_context)
 
-        # 4. ELEMENTARY REFINEMENT (2-Layer depth)
+        # Toddler 2-layer refinement
         for _ in range(2):
             x = self.refiner(x) + x
 
-        # Return output and preliminary divergence
         return self.stage_weight * x, gamma_divergence

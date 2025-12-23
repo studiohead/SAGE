@@ -2,23 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
+from ..config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 class GradeschoolTransformer(DevelopmentalTransformer):
     """
     Stage 4: Structural Subspacing & Categorical Abstraction.
-    - Operator: y = x + Wi * (G * W_proj)
-    - Milestone: Manifold rotation for categorical isolation.
-    - Feature: 4-layer structural refinement for categorical depth.
+    Uses configurable hyperparameters from STAGE_HYPERPARAMS['Gradeschool'].
     """
 
-    def __init__(self, embed_dim=128, nhead=8):
+    def __init__(self):
+        embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
+        nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # Subspace Projection (W_proj):
-        # Rotates the EWMA-anchored centroid into a task-specific basis.
+        stage_cfg = STAGE_HYPERPARAMS["Gradeschool"]
+
+        # Subspace Projection (W_proj)
         self.subspace_proj = nn.Linear(embed_dim, embed_dim, bias=False)
 
-        # Structural Refinement: 4-layer depth for concept categorization
+        # Structural Refinement: 4-layer depth
         self.refiner = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 2),
             nn.GELU(),
@@ -26,40 +28,55 @@ class GradeschoolTransformer(DevelopmentalTransformer):
             nn.LayerNorm(embed_dim)
         )
 
+        # Load hyperparameters from config
+        self.epsilon_scale = stage_cfg["epsilon_scale"]
+        self.training_layers = stage_cfg["training_layers"]
+        self.learning_rate = stage_cfg["learning_rate"]
+        self.weight_decay = stage_cfg["weight_decay"]
+        self.dropout = stage_cfg["dropout"]
+        self.gradient_clip = stage_cfg["gradient_clip"]
+        self.plasticity_scale = stage_cfg["plasticity_scale"]
+        self.scheduler_cfg = stage_cfg["scheduler"]
+
+        # By default, train only the first N layers
+        self.trainable_layer_range = (0, self.training_layers)
+
+    def _set_trainable_layers(self):
+        """
+        Enables gradients for layers in trainable_layer_range and freezes the rest.
+        """
+        start, num_layers = self.trainable_layer_range
+        layers = list(self.children())
+        total_layers = len(layers)
+        end = min(start + num_layers, total_layers)
+
+        for i, layer in enumerate(layers):
+            requires_grad = start <= i < end
+            for param in layer.parameters():
+                param.requires_grad = requires_grad
+
     def forward(self, x, graph_matrix, Wi=1.0):
-        """
-        x: [seq_len, batch, embed_dim]
-        graph_matrix: [num_nodes, embed_dim]
-        """
-        # Confidence Divergence (Impact)
+        # Apply trainable layers selection
+        self._set_trainable_layers()
+
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None:
-            # 1. RETRIEVE EWMA-ANCHORED CENTROID
-            # Grade-school uses the global mean field of the neighborhood
-            # anchor_z acts as the Intrinsic Centroid
+            # Retrieve EWMA-anchored centroid
             anchor_z = graph_matrix.mean(dim=0)
 
-            # 2. SUBSPACE ROTATION (The Stage 4 Operator)
-            # This implements the patent claim: y = x + Wi * (G * W_proj)
-            # It enables categorical isolation (e.g. separating 'Physics' from 'Ethics')
+            # Subspace rotation
             rotated_memory = self.subspace_proj(anchor_z)
 
-            # 3. KNOWLEDGE INTEGRATION
-            # Integration is additive, reflecting 'Structural Grounding'
+            # Knowledge integration
             x_integrated = x + (Wi * rotated_memory)
 
-            # 4. PASSIVE WITNESS MONITORING
-            # We measure the L2 divergence between the input and the subspace projection.
-            # If the projection is zero (Ablated) or orthogonal (Tombstoned),
-            # this stage registers a trust anomaly.
+            # Passive witness monitoring
             gamma_divergence = (x_integrated - x).pow(2).mean().detach()
-
             x = self.norm(x_integrated)
 
-        # 5. CATEGORICAL REFINEMENT (4-Layer depth)
+        # Categorical refinement (4-layer)
         for _ in range(4):
             x = self.refiner(x) + x
 
-        # Return output and 1 - gamma divergence
         return self.stage_weight * x, gamma_divergence
