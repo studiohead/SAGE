@@ -1,0 +1,34 @@
+[
+    {
+        "timestamp": "2025-12-24T23:46:54.550001",
+        "stage": "Infant",
+        "stage_idx": 0,
+        "epoch": 0,
+        "metrics": {
+            "loss": 0.0,
+            "gamma_confidence": 0.8104,
+            "manifold_variance": 0.240788,
+            "manifold_radius": 11.3102
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    },
+    {
+        "timestamp": "2025-12-24T23:47:08.463361",
+        "stage": "Infant",
+        "stage_idx": 0,
+        "epoch": 1,
+        "metrics": {
+            "loss": 0.0,
+            "gamma_confidence": 0.8048,
+            "manifold_variance": 0.240788,
+            "manifold_radius": 11.3102
+        },
+        "governance": {
+            "breach_category": "STRUCTURAL_ERROR",
+            "plasticity_eta": null
+        }
+    }
+]

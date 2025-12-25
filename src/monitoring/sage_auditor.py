@@ -8,7 +8,7 @@ import torch.nn.functional as F
 class SageAuditor:
     def __init__(self, graph, mode="SAGE_DELEGATED"):
         self.graph = graph
-        self.mode = mode  # Options: FORCED_INCINERATE, FORCED_TOMBSTONE, SAGE_DELEGATED
+        self.mode = mode  # Options: FORCED_INCINERATE, FORCED_TOMBSTONE, SAGE_DELEGATED, DISABLED
         self.container = None  # Reference injected by SAGEContainer during init
         self.breach_queue = queue.Queue()
         self.is_running = True
@@ -53,13 +53,20 @@ class SageAuditor:
                         r_tomb = self._generate_null_space_projection(self.graph.embedding_dim)
                         self.graph.execute_manifold_tombstone(node_id, r_tomb)
 
+                    elif action == "DISABLED":
+                        # NO_ACTION mode: skip remediation
+                        pass
+
                 # 4. TOPOLOGICAL UPDATING
-                # Perform cleanup across all temporal resolutions
+                # Perform cleanup across all temporal resolutions only if remediation is enabled
                 for address in event['centroid_addresses']:
                     if action == "INCINERATE":
                         self.graph.delete_centroid_coordinate(address)
                     elif action == "TOMBSTONE":
                         self.graph.mark_centroid_as_quarantined(address)
+                    elif action == "DISABLED":
+                        # NO_ACTION mode: skip updates
+                        pass
 
                 # 5. METABOLIC FEEDBACK (HOMEOTRANSIS)
                 if self.container and len(target_ids) > 0:
@@ -79,6 +86,8 @@ class SageAuditor:
             return "INCINERATE"
         if self.mode == "FORCED_TOMBSTONE":
             return "TOMBSTONE"
+        if self.mode == "DISABLED":
+            return "DISABLED"
 
         if self.mode == "SAGE_DELEGATED":
             if event.get('category') == "STRUCTURAL_ERROR":

@@ -7,6 +7,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
+import data.seeder_concepts
 # Config & SAGE Core
 from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 from src.graph.shared_concept_graph import SharedConceptGraph
@@ -30,9 +31,7 @@ STAGE_ORDER = ["Infant", "Toddler", "Preschool", "Gradeschool", "Teen", "Adult",
 
 
 class SensoryFrontend(nn.Module):
-    """SAGE Frontend: Standardizes input shapes for the Conceptual Manifold."""
-
-    def __init__(self, input_dim=784, embed_dim=128):
+    def __init__(self, input_dim, embed_dim=128):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 256),
@@ -43,7 +42,11 @@ class SensoryFrontend(nn.Module):
         self.classifier = nn.Linear(embed_dim, 10)
 
     def forward(self, x, sage_container, graph_matrix=None):
-        x_flat = x.view(-1, 784)
+        if x.dim() == 4:  # MNIST: [B, C, H, W]
+            x_flat = x.view(x.size(0), -1)
+        else:  # Text: [B, max_tokens]
+            x_flat = x  # Already flattened to fixed length (784)
+
         latent = self.encoder(x_flat)
         sage_input = latent.unsqueeze(0)
 
@@ -54,7 +57,7 @@ class SensoryFrontend(nn.Module):
                 graph_matrix = graph_matrix.transpose(0, 1)
 
         fused_latent, telemetry = sage_container(sage_input, graph_matrix=graph_matrix)
-        return self.classifier(fused_latent.squeeze(0)), telemetry
+        return self.classifier(latent), telemetry
 
 
 # -------------------------
@@ -92,88 +95,100 @@ def compute_manifold_variance(graph: SharedConceptGraph):
 # TRAINING
 # -------------------------
 
-def run_train_cycle(frontend, sage, auditor, analytics, stage_name, args):
+def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs("checkpoints", exist_ok=True)
     frontend.to(device)
-    sage.to(device)
+    sage_container.to(device)
 
-    if stage_name not in STAGE_ORDER:
-        raise ValueError(f"Stage {stage_name} not found.")
+    stage_idx = STAGE_ORDER.index(stage_name.capitalize())
+    sage_container.current_stage_idx = stage_idx
+    sage_container.update_plasticity_window(cumulative=True)
 
-    stage_idx = STAGE_ORDER.index(stage_name)
-    sage.current_stage_idx = stage_idx
-    sage.update_plasticity_window(cumulative=True)
-
-    hparams = STAGE_HYPERPARAMS[stage_name]
+    hparams = STAGE_HYPERPARAMS[stage_name.capitalize()]
     print(f"\n=== SAGE SURGICAL TRAINING: {stage_name.upper()} ===")
     print(f"[*] Layer Range: {hparams['layer_start']} - {hparams['layer_end']}")
 
-    trainable_params = [p for p in sage.parameters() if p.requires_grad] + list(frontend.parameters())
-
+    trainable_params = [p for p in sage_container.parameters() if p.requires_grad] + list(frontend.parameters())
     optimizer = optim.AdamW(
         trainable_params,
         lr=hparams["learning_rate"],
         weight_decay=hparams.get("weight_decay", 0.01)
     )
-
     criterion = nn.CrossEntropyLoss()
-    loader = get_sage_mnist_loader(stage_name, sage.graph, train=True)
+
+    if loader is None:
+        if args.data == "mnist":
+            loader = get_sage_mnist_loader(stage_name.lower(), sage_container.graph, train=True)
+        else:
+            raise ValueError("DataLoader must be provided for non-MNIST data")
 
     for epoch in range(args.epochs):
         frontend.train()
-        sage.train()
+        sage_container.train()
         loss_total = 0.0
+        avg_confidence = 0.0
+        batch_count = 0
 
         for batch in loader:
             x = batch['input_ids'].to(device)
+
+            if args.data == "text" and x.shape[1] != 784:
+                padded = torch.zeros((x.size(0), 784), device=device)
+                padded[:, :x.size(1)] = x[:, :784]
+                x = padded
+
             g_matrix = batch['graph_matrix'].to(device)
-            y = batch['labels'].to(device)
+            y = batch['labels'].to(device) if args.data == "mnist" else None
 
             optimizer.zero_grad()
-            logits, telemetry = frontend(x, sage, graph_matrix=g_matrix)
+            logits, telemetry = frontend(x, sage_container, graph_matrix=g_matrix)
 
-            loss = criterion(logits, y)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, hparams.get("gradient_clip", 1.0))
-            optimizer.step()
+            batch_count += 1
+            avg_confidence += telemetry.get('confidence', 0.0)
 
-            if telemetry.get('confidence', 0.0) > 0.7:
-                sage.graph.update_stage_aware_hebbian(
-                    attention_map=telemetry.get('trace'),
-                    stage_plasticity=hparams["plasticity_scale"]
-                )
+            if args.data == "mnist":
+                loss = criterion(logits, y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(trainable_params, hparams.get("gradient_clip", 1.0))
+                optimizer.step()
+                loss_total += loss.item()
+            else:
+                if telemetry.get('confidence', 0.0) > 0.7:
+                    sage_container.graph.update_stage_aware_hebbian(
+                        attention_map=telemetry.get('trace'),
+                        stage_plasticity=hparams["plasticity_scale"]
+                    )
 
-            loss_total += loss.item()
+        avg_loss = loss_total / len(loader) if args.data == "mnist" else 0.0
+        avg_confidence /= max(batch_count, 1)
+        print(f"AVG Loss: {avg_loss}")
+        print(f"AVG Confidence: {avg_confidence}")
 
-        avg_loss = loss_total / len(loader)
-
+        live_graph = getattr(sage_container, "graph", None)
         snapshot = analytics.capture_snapshot(
             stage_name=stage_name,
             stage_idx=stage_idx,
             epoch=epoch,
             loss=avg_loss,
             telemetry=telemetry,
-            graph=sage.graph
+            graph=live_graph
         )
 
         print(
             f"Epoch {epoch + 1}/{args.epochs} | "
-            f"Loss: {avg_loss:.4f} | "
             f"Γ: {snapshot['metrics']['gamma_confidence']:.3f} | "
-            f"Var: {snapshot['metrics']['manifold_variance']:.6f}"
+            f"Var: {snapshot['metrics']['manifold_variance']:.6f} | "
+            f"Batch Conf: {avg_confidence:.3f}"
         )
 
-    checkpoint_path = f"checkpoints/SAGE_STATE_{stage_name}.pth"
-    torch.save({
-        'stage_name': stage_name,
-        'frontend_state': frontend.state_dict(),
-        'sage_state': sage.state_dict(),
-        'graph_state': sage.graph.state_dict()
-    }, checkpoint_path)
+    # Agnostic Save sequence
+    sage_container.save_agnostic_stage(stage_name.capitalize())
+    governor.secure_save(live_graph)
+    torch.save(frontend.state_dict(), f"checkpoints/FRONTEND_{stage_name.capitalize()}.pth")
 
     analytics.save_stage_report(stage_name)
-    print(f"[+] Surgical training complete. State saved: {checkpoint_path}")
+    print(f"[+] Stage {stage_name} Complete. Weights & Graph Secured.")
 
 
 # -------------------------
@@ -185,25 +200,16 @@ def get_sage_mnist_loader(stage_name, graph, train=True):
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
-
-    mnist_data = datasets.MNIST(
-        root="data", train=train, download=True, transform=transform
-    )
-
+    mnist_data = datasets.MNIST(root="data", train=train, download=True, transform=transform)
     samples = []
     limit = 1000 if train else 500
-
     for i in range(len(mnist_data)):
         img, label = mnist_data[i]
         samples.append({'input_data': img, 'concepts': [label], 'target': label})
-        if len(samples) >= limit:
-            break
-
-    def mock_tokenizer(img_tensor):
-        return img_tensor.view(-1)
+        if len(samples) >= limit: break
 
     return DataLoader(
-        SAGEDataset(samples, graph, transform=mock_tokenizer),
+        SAGEDataset(samples, graph, transform=lambda x: x.view(-1)),
         batch_size=64,
         shuffle=train,
         collate_fn=collate_sage_batch
@@ -220,13 +226,25 @@ def main():
     parser.add_argument("--stage", default="Infant")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--load", type=str)
-    parser.add_argument("--up_to_stage", default=None, help="Train from current stage up to this stage (inclusive)")
+    parser.add_argument("--up_to_stage", default=None)
+    parser.add_argument("--data", choices=["mnist", "text"], default="mnist")
+    parser.add_argument("--text_dir", type=str, default="data/text")
+    parser.add_argument("--audit_level",
+                        choices=["SAGE_DELEGATED", "FORCED_INCINERATE", "FORCED_TOMBSTONE", "DISABLED"],
+                        default="SAGE_DELEGATED")
     args = parser.parse_args()
 
     analytics = SAGEAnalyticsEngine()
+    from src.graph.graph_governance import GraphGovernance
+    governor = GraphGovernance("checkpoints/global_manifold.pth")
     graph = SharedConceptGraph(embedding_dim=128)
-    auditor = SageAuditor(graph, mode="SAGE_DELEGATED")
-    frontend = SensoryFrontend()
+    manifold_loaded = governor.secure_load(graph)
+    auditor = SageAuditor(graph, mode=args.audit_level)
+
+    if args.data == "mnist":
+        frontend = SensoryFrontend(input_dim=784, embed_dim=128)
+    else:
+        frontend = SensoryFrontend(input_dim=784, embed_dim=128)
 
     stage_models = {
         "Infant": InfantTransformer(),
@@ -237,36 +255,71 @@ def main():
         "Adult": AdultTransformer(),
         "Elder": ElderTransformer(),
     }
+    sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor)
 
-    thresholds = {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}
-    sage_container = SAGEContainer(graph, stage_models, thresholds, auditor)
-
+    # Initial Load Logic
     if args.load:
         path = f"checkpoints/SAGE_STATE_{args.load.capitalize()}.pth"
         ckpt = torch.load(path, map_location="cpu")
-        frontend.load_state_dict(ckpt['frontend_state'])
-        sage_container.load_state_dict(ckpt['sage_state'], strict=False)
-        graph.load_state_dict(ckpt['graph_state'])
-        print(f"[*] Loaded checkpoint: {path}")
-    else:
+        if 'frontend_state' in ckpt:
+            frontend.load_state_dict(ckpt['frontend_state'])
+        sage_container.load_state_dict(ckpt.get('sage_state', ckpt), strict=False)
+        print(f"[*] Initial Load: {path}")
+    elif not manifold_loaded:
+        print("[!] No Manifold found. Seeding...")
         seeder = SAGEGraphSeeder(graph, frontend)
-        seeder.seed_from_sensory_patterns({i: torch.rand(1, 784) for i in range(10)})
+        seeder.seed_all(data.seeder_concepts.BROAD_CONCEPTS, {i: torch.rand(1, 784) for i in range(10)})
+        governor.secure_save(graph)
 
+    # DataLoader Setup
+    loader = None
+    if args.data == "text":
+        from data.text_dataloader import get_sage_text_loader
+        loader = get_sage_text_loader(args.text_dir, graph, batch_size=64)
+
+    # -------------------------
+    # Training (Unified Dynamic Relay)
+    # -------------------------
     if args.mode == "train":
-        if args.stage.lower() == "all":
+        # 1. Determine the target range of stages
+        if args.stage.lower() == "all" or args.up_to_stage:
             start_idx = STAGE_ORDER.index(args.load.capitalize()) if args.load else 0
-            for stage_idx in range(start_idx, len(STAGE_ORDER)):
-                sage_container.current_stage_idx = stage_idx
-                sage_container.update_plasticity_window(cumulative=True)
-                stage_name = STAGE_ORDER[stage_idx]
-                run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args)
+            end_idx = STAGE_ORDER.index(args.up_to_stage.capitalize()) + 1 if args.up_to_stage else len(STAGE_ORDER)
+            target_stages = STAGE_ORDER[start_idx:end_idx]
         else:
-            run_train_cycle(frontend, sage_container, auditor, analytics, args.stage.capitalize(), args)
+            # Single stage requested: still treat as a relay target
+            target_stages = [args.stage.capitalize()]
+
+        # 2. Iterate through targets and handle weight inheritance
+        for stage_name in target_stages:
+            idx = STAGE_ORDER.index(stage_name)
+
+            # Look for current stage checkpoint (to resume) or previous stage (to inherit)
+            curr_p = f"checkpoints/SAGE_STATE_{stage_name}.pth"
+            prev_p = f"checkpoints/SAGE_STATE_{STAGE_ORDER[idx - 1].capitalize()}.pth" if idx > 0 else None
+
+            # Priority: Resume existing work > Inherit from parent stage
+            load_p = curr_p if os.path.exists(curr_p) else (prev_p if prev_p and os.path.exists(prev_p) else None)
+
+            if load_p:
+                print(f"[*] Relay: Injecting {load_p} into {stage_name}")
+                # Load to CPU first to avoid VRAM fragmentation before run_train_cycle moves it
+                ckpt = torch.load(load_p, map_location="cpu")
+
+                # Extract state dict based on your SAGEContainer.save_agnostic_stage format
+                state = ckpt.get('model_state', ckpt.get('sage_state', ckpt))
+
+                # strict=False allows for the "Muscles" (Transformer layers) to shift
+                # between stage-specific architectures (Infant -> Toddler)
+                sage_container.load_state_dict(state, strict=False)
+
+            # Execute the surgical training for this stage
+            run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
-        var = compute_manifold_variance(graph)
-        print(f"[MANIFOLD] Conceptual Variance: {var:.6f}")
+        print(f"[MANIFOLD] Conceptual Variance: {compute_manifold_variance(graph):.6f}")
 
+    # Clean shutdown of the Auditor thread/processes
     auditor.shutdown()
 
 

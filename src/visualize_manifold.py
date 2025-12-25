@@ -55,7 +55,7 @@ def visualize_manifold(checkpoint_path):
         color = colors.get(stage, 'gray')
         plt.scatter(coords[i, 0], coords[i, 1], s=100, c=color, alpha=0.6, edgecolors='black')
         plt.annotate(label, (coords[i, 0], coords[i, 1]), textcoords="offset points",
-                     xytext=(0, 10), ha='center', fontsize=0)
+                     xytext=(0, 10), ha='center', fontsize=8)
 
     plt.title(f"SAGE Conceptual Manifold: {checkpoint.get('stage_name', 'Stage Logic')}")
     plt.grid(True, linestyle='--', alpha=0.5)

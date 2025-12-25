@@ -8,7 +8,8 @@ class ConceptNode:
     def __init__(self, node_id, embedding_dim=128):
         self.node_id = node_id
         # Weights represent the structural material of the concept
-        self.embedding = nn.Parameter(torch.randn(embedding_dim))
+        # Initialized with lower variance to aid early stability
+        self.embedding = nn.Parameter(torch.randn(embedding_dim) * 0.1)
         self.alignment_score = 1.0  # Plasticity multiplier (0.0 = Cauterized)
         self.connections = {}  # {neighbor_node_id: weight}
 
@@ -34,7 +35,7 @@ class SharedConceptGraph(nn.Module):
     def update_local_centroid(self, node_id):
         """
         Implements EWMA Centroid Anchoring: Z_t+1 = (1 - λ)Z_t + λ(C_v_new).
-        This handles the temporal drift of conceptual meaning.
+        Ensures centroids stay normalized to prevent gain-loop blowouts.
         """
         node = self.nodes[node_id]
         neighbors = list(node.connections.keys())
@@ -48,8 +49,9 @@ class SharedConceptGraph(nn.Module):
         # Get existing anchor or initialize with current
         z_t = self.anchor_tensor.get(node_id, c_v_new)
 
-        # Apply EWMA update
-        self.anchor_tensor[node_id] = (1.0 - self.lambda_ewma) * z_t + self.lambda_ewma * c_v_new
+        # Apply EWMA update and project to Unit-Sphere to prevent manifold expansion
+        updated_z = (1.0 - self.lambda_ewma) * z_t + self.lambda_ewma * c_v_new
+        self.anchor_tensor[node_id] = F.normalize(updated_z, p=2, dim=0)
 
     def is_node_in_centroid_range(self, node_id, centroid_address, radius=0.7):
         """
@@ -64,7 +66,7 @@ class SharedConceptGraph(nn.Module):
     def get_graph_embedding_matrix(self):
         """
         Returns a stacked tensor of all embeddings for stage processing.
-        Applies alignment_score and filters tombstoned nodes.
+        ENFORCES UNIT NORM: Essential to prevent Toddler-stage Hadamard blowouts.
         """
         embs = []
         for nid in self.node_order:
@@ -73,7 +75,9 @@ class SharedConceptGraph(nn.Module):
                 # Neutral representation to maintain sequence indices
                 embs.append(torch.zeros(self.embedding_dim, device=node.embedding.device))
             else:
-                embs.append(node.embedding * node.alignment_score)
+                # Projection to Unit-Sphere ensures gain never exceeds 1.0
+                norm_emb = F.normalize(node.embedding, p=2, dim=0)
+                embs.append(norm_emb * node.alignment_score)
 
         return torch.stack(embs) if embs else torch.zeros((1, self.embedding_dim))
 
@@ -154,6 +158,8 @@ class SharedConceptGraph(nn.Module):
         Excludes tombstoned (quarantined) and incinerated (ablated) nodes.
         """
         query_coord = current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent
+        # Normalize query to match normalized Z-space
+        query_coord = F.normalize(query_coord, p=2, dim=0)
 
         # Radius search via cosine similarity in Z-space
         scored_anchors = []
@@ -174,7 +180,8 @@ class SharedConceptGraph(nn.Module):
             node = self.nodes[cid]
             # Governance Gate: Skip if confidence is low, scarred, or tombstoned
             if sim_score > 0.7 and node.alignment_score > 0.1 and not node.is_tombstoned:
-                context_tensors.append(node.embedding.to(query_coord.device))
+                # Return normalized context
+                context_tensors.append(F.normalize(node.embedding, p=2, dim=0).to(query_coord.device))
 
         if not context_tensors:
             return torch.zeros((1, self.embedding_dim), device=query_coord.device)
@@ -186,14 +193,26 @@ class SharedConceptGraph(nn.Module):
     def update_stage_aware_hebbian(self, attention_map, stage_plasticity=1.0):
         """
         Updates relational weights with Scar-Tissue and Null-Space guardrails.
+        HEBBIAN DECAY: Added to prevent connection weights from accumulating to infinity.
         """
         if len(self.node_order) < 2 or attention_map is None:
             return
 
         # Normalize attention for graph update
-        avg_att = attention_map.mean(dim=0)  # [num_nodes, num_nodes]
+        avg_att = attention_map.mean(dim=0)
+
+        # Determine the capacity of the current sensory/latent vision
+        trace_limit = avg_att.size(0)
 
         for i, uid_i in enumerate(self.node_order):
+            # Guardrail 1: Trace Boundary
+            if i >= trace_limit:
+                break
+
+            # Guardrail 2: Key Existence
+            if uid_i not in self.nodes:
+                continue
+
             node_i = self.nodes[uid_i]
 
             # Skip update for Null-Space or Ablated nodes
@@ -201,14 +220,23 @@ class SharedConceptGraph(nn.Module):
                 continue
 
             for j, uid_j in enumerate(self.node_order):
+                # Guardrail 1: Trace Boundary
+                if j >= trace_limit:
+                    break
+
+                # Guardrail 2: Key Existence
+                if uid_j not in self.nodes:
+                    continue
+
                 if i == j or self.nodes[uid_j].is_tombstoned:
                     continue
 
-                # Hebbian delta modulated by node alignment (trust)
+                # Hebbian delta modulated by node alignment (trust) and attention weight
                 delta = stage_plasticity * node_i.alignment_score * avg_att[i, j]
 
-                if delta > 0.01:
-                    node_i.connections[uid_j] = node_i.connections.get(uid_j, 0.0) + delta
+                # STABILITY FIX: Apply decay (0.99) to current weight to prevent runaway growth
+                current_w = node_i.connections.get(uid_j, 0.0)
+                node_i.connections[uid_j] = (current_w * 0.99) + delta
 
             # Periodic EWMA update
             if torch.rand(1).item() > 0.95:
@@ -217,9 +245,12 @@ class SharedConceptGraph(nn.Module):
     def ensure_stage_initialized(self, stage_idx):
         """
         Ensures all nodes are ready for a new stage.
-        If a node has sufficient alignment_score (plasticity) and is not tombstoned, it is promoted.
         """
+        # Iterate safely through the node_order
         for node_id in self.node_order:
+            if node_id not in self.nodes:
+                continue
+
             node = self.nodes[node_id]
 
             # Skip nodes already promoted or tombstoned
@@ -231,7 +262,9 @@ class SharedConceptGraph(nn.Module):
                 node.stage_idx = stage_idx
 
         # Initialize anchor for this stage if it does not exist
-        if stage_idx not in getattr(self, "stage_anchors", {}):
-            if not hasattr(self, "stage_anchors"):
-                self.stage_anchors = {}
+        if not hasattr(self, "stage_anchors"):
+            self.stage_anchors = {}
+
+        if stage_idx not in self.stage_anchors:
+            # Anchors are created in the same dimension as the manifold (128)
             self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim)

@@ -23,7 +23,6 @@ class ToddlerTransformer(DevelopmentalTransformer):
         stage_cfg = STAGE_HYPERPARAMS["Toddler"]
 
         # Calculate how many layers this stage owns.
-        # Logic: layer_end - layer_start gives the physical slice.
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
         # 3. Dynamic Layer Allocation
@@ -37,7 +36,7 @@ class ToddlerTransformer(DevelopmentalTransformer):
         ])
 
         # 4. Relational Bias (W in the patent logic - Hadamard Gate)
-        self.relational_weight = nn.Parameter(torch.randn(embed_dim))
+        self.relational_weight = nn.Parameter(torch.zeros(embed_dim))
 
         # 5. Output Refinement
         self.refiner = nn.LayerNorm(embed_dim)
@@ -54,12 +53,19 @@ class ToddlerTransformer(DevelopmentalTransformer):
 
         # 1. CONTEXTUAL FILTERING (Patent Logic)
         if graph_matrix is not None:
-            # Toddler anchors to Mid-Scale Contextual Centroid (Index 1)
+            # Robust Centroid Extraction: Fallback if addresses are missing
             if centroid_addresses and len(centroid_addresses) > 1:
                 graph_centroid = centroid_addresses[1]
             else:
-                # Dim 0 is Nodes -> [Batch, Dim]
-                graph_centroid = graph_matrix.mean(dim=0)
+                # Collapse graph_matrix to a [Batch, Dim] or [Dim] representation
+                graph_centroid = graph_matrix
+                # Ensure we squeeze out extra dimensions (e.g., from Node-Level stacking)
+                while graph_centroid.dim() > 2:
+                    graph_centroid = graph_centroid.mean(dim=0)
+
+                # If it's [Nodes, Dim], mean it down to [Dim] to allow broadcasting
+                if graph_centroid.dim() == 2 and graph_centroid.size(0) != x.size(1):
+                    graph_centroid = graph_centroid.mean(dim=0)
 
             # Stochastic Grounding (Epsilon Noise)
             if self.training:
@@ -67,14 +73,20 @@ class ToddlerTransformer(DevelopmentalTransformer):
                 graph_centroid = graph_centroid + epsilon
 
             # Element-wise Hadamard Gating
-            # graph_centroid is [Batch, Dim], relational_weight is [Dim]
             context_filter = torch.sigmoid(graph_centroid * self.relational_weight)
 
-            # DIMENSION GUARD: Ensure context_filter [Batch, Dim] matches x [Seq, Batch, Dim]
-            # We unsqueeze(0) to turn [Batch, Dim] into [1, Batch, Dim]
-            x_context = x + (Wi * (x * context_filter.unsqueeze(0)))
+            # DIMENSION GUARD: Prepare for [Seq, Batch, Dim]
+            filter_view = context_filter
+            if filter_view.dim() == 1:  # [Dim] -> [1, 1, Dim]
+                filter_view = filter_view.view(1, 1, -1)
+            elif filter_view.dim() == 2:  # [Batch, Dim] -> [1, Batch, Dim]
+                filter_view = filter_view.unsqueeze(0)
+
+            # Hadamard Integration: This is the core patent math
+            x_context = x + (Wi * (x * filter_view))
 
             # Comparative Geometric Divergence (Gamma)
+            # This should now be > 0.0, which makes Gamma < 1.0
             gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
