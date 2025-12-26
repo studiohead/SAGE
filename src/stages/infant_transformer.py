@@ -1,4 +1,13 @@
 # src/stages/infant_transformer.py
+
+##############################################################################
+# Infant | y = x + (W * mean(G)) + ε
+# Purpose:
+# Stochastic grounding stage with high plasticity.
+# Introduces noise (ε) to encourage exploratory representations.
+# Graph influence is averaged globally, prioritizing stability over structure.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

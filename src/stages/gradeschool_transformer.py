@@ -1,4 +1,13 @@
 # src/stages/gradeschool_transformer.py
+
+##############################################################################
+# Gradeschool | y = x + W * (G * W_proj)
+# Purpose:
+# Linear projection of graph manifolds into task-aligned subspaces.
+# Establishes stable representational geometry.
+# Reduces stochasticity in favor of deterministic structure learning.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

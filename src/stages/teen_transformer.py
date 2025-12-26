@@ -1,4 +1,13 @@
 # src/stages/teen_transformer.py
+
+##############################################################################
+# Teen | y = Gumbel-Softmax(x, W * G)
+# Purpose:
+# Discrete stochastic arbitration between competing representations.
+# Enables near-discrete decision paths while retaining gradient flow.
+# Supports exploratory yet increasingly decisive behavior.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

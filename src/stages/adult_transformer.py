@@ -1,4 +1,13 @@
 # src/stages/adult_transformer.py
+
+##############################################################################
+# Adult | y = Softmax((Q_x * K_G^T)/sqrt(d_k)) * V_G
+# Purpose:
+# Cross-attention retrieval between input queries and graph memory.
+# Separates query, key, and value spaces for explicit information routing.
+# Represents mature, stable attention-based reasoning.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

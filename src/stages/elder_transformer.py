@@ -1,4 +1,13 @@
 # src/stages/elder_transformer.py
+
+##############################################################################
+# Elder | Functional Recursive Meta-Governance Layer
+# Purpose:
+# Accepts active execution paths, context centroids, and global anchors.
+# Applies recursive governance over lower-stage outputs.
+# Emits governed traces and comparative divergence metrics for self-evaluation.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

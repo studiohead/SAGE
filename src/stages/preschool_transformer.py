@@ -1,3 +1,13 @@
+# src/stages/preschool_transformer.py
+
+##############################################################################
+# Preschool | y = x + W * sum(Softmax(G) * G)
+# Purpose:
+# Saliency-weighted node prioritization.
+# Softmax over graph activations emphasizes dominant structures.
+# Marks transition from uniform influence to attention-like behavior.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

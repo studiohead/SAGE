@@ -1,4 +1,13 @@
 # src/stages/toddler_transformer.py
+
+##############################################################################
+# Toddler | y = x + (W ⊙ mean(G))
+# Purpose:
+# Relational gating via element-wise modulation.
+# Maintains global graph averaging while introducing selective weighting.
+# Early emergence of structured influence without full saliency.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
