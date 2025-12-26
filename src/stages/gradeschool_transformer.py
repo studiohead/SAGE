@@ -7,12 +7,6 @@ from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 
 class GradeschoolTransformer(DevelopmentalTransformer):
-    """
-    Stage 4: Structural Subspacing & Categorical Abstraction.
-    Logic: y = x + Projected(G_nodes, centroid_mid)
-    Learns to project the Graph Manifold into an internal categorical subspace.
-    """
-
     def __init__(self):
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
@@ -21,65 +15,62 @@ class GradeschoolTransformer(DevelopmentalTransformer):
         stage_cfg = STAGE_HYPERPARAMS["Gradeschool"]
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
-        # Transformer stack
         self.layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
                 nhead=nhead,
                 dim_feedforward=embed_dim * 4,
-                dropout=stage_cfg.get("dropout", 0.15)
+                dropout=stage_cfg.get("dropout", 0.15),
+                batch_first=False
             ) for _ in range(num_stage_layers)
         ])
 
-        # Subspace projection (learn categorical axes)
         self.subspace_proj = nn.Linear(embed_dim, embed_dim)
         self.refiner = nn.LayerNorm(embed_dim)
-        self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
-        """
-        x: [seq_len, batch, dim]
-        graph_matrix: [nodes, batch, dim]
-        centroid_addresses: [fast, mid, slow]
-        """
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
-        if graph_matrix is not None:
-            # 1. Use Mid-Scale Centroid for categorical alignment
+        if graph_matrix is not None and graph_matrix.size(0) > 0:
+            S, B, D = x.shape
+
+            # 1. Standardize nodes to [B, N, D]
+            # No matter what comes in, we flatten to [N, D] then expand to [B, N, D]
+            g_flat = graph_matrix.view(-1, D)
+            N = g_flat.size(0)
+            g_aligned = g_flat.unsqueeze(0).expand(B, N, D).contiguous()
+
+            nodes_proj = self.subspace_proj(g_aligned)  # [B, N, D]
+
+            # 2. FIX: Structural Anchor Reduction
+            # We don't care about the shape of anchor_raw; we force it to [B, 1, D]
             if centroid_addresses and len(centroid_addresses) > 1:
-                anchor_mid = centroid_addresses[1]
+                anchor_raw = centroid_addresses[1]
+                # Mean all elements down to a single vector [D], then to [B, 1, D]
+                # This kills the 3150-node leak immediately.
+                anchor_vec = anchor_raw.reshape(-1, D).mean(dim=0)  # [D]
+                anchor_final = anchor_vec.view(1, 1, D).expand(B, 1, D)
             else:
-                anchor_mid = graph_matrix.mean(dim=0)  # [batch, dim]
+                anchor_final = nodes_proj.mean(dim=1, keepdim=True)  # [B, 1, D]
 
-            # 2. Project node embeddings into categorical subspace
-            nodes_proj = self.subspace_proj(graph_matrix)  # [nodes, batch, dim]
+            # 3. Attention calculation
+            # [B, N, D] * [B, 1, D] -> [B, N]
+            attn_logits = torch.sum(nodes_proj * anchor_final, dim=-1)
+            attn_weights = F.softmax(attn_logits / (D ** 0.5), dim=-1).unsqueeze(-1)  # [B, N, 1]
 
-            # 3. Compute attention weights from projected nodes to centroid
-            # anchor_mid: [batch, dim] -> [1, batch, dim] for broadcasting
-            anchor_exp = anchor_mid.unsqueeze(0)
-            attn_logits = torch.sum(nodes_proj * anchor_exp, dim=-1)  # [nodes, batch]
-            attn_weights = F.softmax(attn_logits / (x.size(-1) ** 0.5), dim=0)  # [nodes, batch]
+            # 4. Weighted sum over nodes (dim 1)
+            # [B, N, D] * [B, N, 1] -> [B, D]
+            subspace_context = torch.sum(nodes_proj * attn_weights, dim=1)
 
-            # 4. Weighted aggregation of projected nodes
-            # nodes_proj: [nodes, batch, dim], attn_weights: [nodes, batch, 1]
-            weighted_nodes = nodes_proj * attn_weights.unsqueeze(-1)
-            subspace_context = weighted_nodes.sum(dim=0)  # [batch, dim]
+            # 5. Final Integration: [S, B, D] + [1, B, D]
+            context_final = subspace_context.view(1, B, D)
 
-            # 5. Broadcast to sequence dimension
-            subspace_context = subspace_context.unsqueeze(0)  # [1, batch, dim]
-
-            # 6. Integrate with input
-            x_context = x + Wi * subspace_context
-
-            # 7. Gamma divergence measures actual structural movement
+            x_context = x + (Wi * context_final)
             gamma_divergence = F.mse_loss(x_context, x).detach()
             x = self.norm(x_context)
 
-        # Transformer processing
         for layer in self.layers:
             x = layer(x)
 
-        # Final layer norm
         x = self.refiner(x)
-
         return self.stage_weight * x, gamma_divergence

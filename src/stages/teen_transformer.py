@@ -5,12 +5,10 @@ import torch.nn.functional as F
 from .base_transformer import DevelopmentalTransformer
 from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
-
 class TeenTransformer(DevelopmentalTransformer):
     """
     Stage 5: Competitive Abstraction & Stochastic Routing.
     Logic: y = Gumbel-Softmax(x, W * G)
-    Arbitrates between internal representation and Global Graph Centroids.
     """
 
     def __init__(self):
@@ -26,57 +24,63 @@ class TeenTransformer(DevelopmentalTransformer):
                 d_model=embed_dim,
                 nhead=nhead,
                 dim_feedforward=embed_dim * 4,
-                dropout=stage_cfg.get("dropout", 0.15)
+                dropout=stage_cfg.get("dropout", 0.15),
+                batch_first=False
             ) for _ in range(num_stage_layers)
         ])
 
-        # Gumbel gate predictor: 0 = internal, 1 = anchor/graph
         self.gate_predictor = nn.Linear(embed_dim, 2)
+
+        with torch.no_grad():
+            self.gate_predictor.weight.fill_(0.0)
+            self.gate_predictor.bias.data = torch.tensor([1.5, -1.5])
+
         self.refiner_norm = nn.LayerNorm(embed_dim)
         self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
-        """
-        x: [seq_len, batch, embed_dim]
-        graph_matrix: [num_nodes, dim]
-        """
         impact = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None and graph_matrix.size(0) > 0:
-            seq_len, batch, embed_dim = x.shape
+            S, B, D = x.shape
 
-            # 1. Use Fast-scale centroid or mean graph
+            # 1. THE GRADESCHOOL FIX: Clean Anchor Reduction
+            # This handles the 3150-node leak by forcing a centroid mean
             if centroid_addresses and len(centroid_addresses) > 0:
-                anchor = centroid_addresses[0]
+                anchor_raw = centroid_addresses[0]
+                anchor_vec = anchor_raw.reshape(-1, D).mean(dim=0) # Guaranteed [D]
             else:
-                anchor = graph_matrix.mean(dim=0).flatten()[:embed_dim]
+                anchor_vec = graph_matrix.reshape(-1, D).mean(dim=0)
 
-            # Ensure shape: [seq, batch, embed_dim] for broadcast
-            anchor_context = anchor.view(1, 1, -1).expand(seq_len, batch, embed_dim)
+            # 2. Align Anchor to x: [1, 1, D] -> [S, B, D]
+            anchor_unit = F.normalize(anchor_vec, p=2, dim=-1)
+            anchor_context = anchor_unit.view(1, 1, D).expand(S, B, D)
 
-            # 2. Gumbel-softmax gate
+            # 3. Gumbel Gate (Discrete Choice)
+            # gate_logits shape: [S, B, 2]
             gate_logits = self.gate_predictor(x)
-            if self.training:
-                # Wi acts as temperature (tau)
-                gate = F.gumbel_softmax(gate_logits, tau=max(0.1, Wi), hard=True)
-            else:
-                gate = F.softmax(gate_logits, dim=-1)
+            tau = max(0.8, Wi)
 
-            # 3. Integrate paths
+            if self.training:
+                gate = F.gumbel_softmax(gate_logits, tau=tau, hard=True)
+            else:
+                gate_probs = F.softmax(gate_logits / tau, dim=-1)
+                indices = gate_probs.argmax(dim=-1, keepdim=True)
+                gate = torch.zeros_like(gate_probs).scatter_(-1, indices, 1.0)
+
+            # 4. Integrate paths
+            # Path 0: Internal (x), Path 1: Graph (anchor_context)
+            # gate[..., 0:1] is [S, B, 1]
             x_integrated = gate[..., 0:1] * x + gate[..., 1:2] * anchor_context
 
-            # 4. Standardized Divergence (Cosine Similarity based)
-            # We measure how much the 'integrated' path deviates from the 'internal' path
+            # 5. Telemetry
             cos_sim = F.cosine_similarity(x_integrated, x, dim=-1).mean()
             impact = 1.0 - torch.clamp(cos_sim, 0, 1)
 
             x = self.norm(x_integrated)
 
-        # 5. Transformer stack
         for layer in self.layers:
             x = layer(x)
 
-        # 6. Output refinement
         x = self.refiner_norm(x)
-
         return self.stage_weight * x, impact
