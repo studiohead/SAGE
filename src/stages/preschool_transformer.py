@@ -37,8 +37,8 @@ class PreschoolTransformer(DevelopmentalTransformer):
         if graph_matrix is not None:
             # 1. FORCE REALIGNMENT
             # If we are getting a flattened 8192, we must reconstruct the node-space
-            # 8192 / 512 = 16 nodes.
-            working_graph = graph_matrix.view(-1, self.embed_dim)  # [16, 512]
+            # 8192 / 256 = 32 nodes.
+            working_graph = graph_matrix.reshape(-1, self.embed_dim)
 
             # 2. ANCHOR ALIGNMENT
             if centroid_addresses and len(centroid_addresses) > 2:
@@ -49,25 +49,25 @@ class PreschoolTransformer(DevelopmentalTransformer):
                 anchor_slow = working_graph.mean(dim=0)
 
             # 3. SALIENCY CALCULATION
-            # Project nodes: [64, 128] -> [16, 512]
+            # Project nodes: [64, 128] -> [32, 256]
             G_projected = self.saliency_proj(working_graph)
 
-            # anchor_slow: [512] -> [512, 1) for matmul
-            # logits: [16, 1]
+            # anchor_slow: [256] -> [256, 1) for matmul
+            # logits: [32, 1]
             relevance_logits = torch.matmul(G_projected, anchor_slow.view(self.embed_dim, 1))
             saliency_weights = F.softmax(relevance_logits / (self.embed_dim ** 0.5), dim=0)
 
             # 4. KNOWLEDGE INTEGRATION
-            # G_projected: [16, 512], weights: [16, 1]
-            # essence: [512]
+            # G_projected: [32, 256], weights: [32, 1]
+            # essence: [256]
             focused_essence = torch.sum(G_projected * saliency_weights, dim=0)
 
             # 5. BROADCAST PREP
-            # Explicitly force essence to [1, 1, 512]
+            # Explicitly force essence to [1, 1, 256]
             essence_context = focused_essence.reshape(1, 1, self.embed_dim)
 
             # 6. ADDITION
-            # a (512) + b (512)
+            # a (256) + b (256)
             x_context = x + (Wi * essence_context)
 
             gamma_divergence = F.mse_loss(x_context, x).detach()

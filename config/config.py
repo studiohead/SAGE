@@ -1,6 +1,6 @@
 # --- Core model structure (shared across all stages) ---
 SHARED_MODEL_CONFIG = {
-    "embed_dim": 512,      # Embedding dimension
+    "embed_dim": 128,      # Embedding dimension
     "nhead": 8,            # Attention heads
     "head_dim": 16,        # Each head's dimension
     "num_layers": 48       # Maximum layers in the full model stack
@@ -78,7 +78,7 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.8,
         "plasticity_scale": 0.8,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 300},
-        "batch_size": 8,
+        "batch_size": 4,
         "epochs": 5
     },
     "Adult": {
@@ -92,7 +92,7 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.7,
         "plasticity_scale": 0.7,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
-        "batch_size": 8,
+        "batch_size": 1,
         "epochs": 5
     },
     "Elder": {
@@ -106,7 +106,7 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.5,
         "plasticity_scale": 0.5,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
-        "batch_size": 8,
+        "batch_size": 1,
         "epochs": 5
     }
 }

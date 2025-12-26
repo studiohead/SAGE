@@ -27,7 +27,7 @@ class GraphGovernance:
             # 1. Grab the PyTorch state (likely empty, but good for buffers)
             graph_state = graph.state_dict()
 
-            # 2. MANUALLY grab the nodes (The missing 512-dim data)
+            # 2. MANUALLY grab the nodes (The missing 256-dim data)
             nodes_data = {
                 node_id: {
                     'embedding': node.embedding.data.cpu(),

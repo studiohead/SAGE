@@ -1,9 +1,14 @@
 # src/container/sage_container.py
+import math
 import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config.config import STAGE_HYPERPARAMS
+from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+
+
+EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
+
 
 class StageFusion(nn.Module):
     """
@@ -64,7 +69,7 @@ class SAGEContainer(nn.Module):
 
         # Infer hidden dim from the first available stage model
         sample_transformer = next(iter(stage_models.values()))
-        self.hidden_dim = getattr(sample_transformer, 'embed_dim', 512)
+        self.hidden_dim = getattr(sample_transformer, 'embed_dim', EMBED_DIM)
         self.fusion = StageFusion(len(stage_models), self.hidden_dim)
 
     def update_plasticity_window(self, cumulative=False):
@@ -126,7 +131,10 @@ class SAGEContainer(nn.Module):
             out, impact = model(x_aug, graph_matrix, Wi=self.eta)
 
             # --- NUMERICAL HARDENING ---
-            if torch.isnan(impact) or torch.isnan(out).any():
+            # Check if impact is a tensor or a scalar float
+            is_impact_nan = torch.isnan(impact).any() if isinstance(impact, torch.Tensor) else math.isnan(impact)
+
+            if is_impact_nan or torch.isnan(out).any():
                 if self.training:
                     print(f"[!] Warning: Stage {i} ({name}) exploded. Clamping for recovery.")
                 impact = torch.tensor(1.0, device=x.device)  # Force max divergence
@@ -139,9 +147,16 @@ class SAGEContainer(nn.Module):
             stage_outputs.append(out)
 
             # --- DIAGNOSTIC PROBE ---
-            current_gamma = 1.0 - torch.clamp(torch.as_tensor(impact), 0, 1).item()
+            # 1. Safely convert impact to a float for the print statement
+            impact_val = impact.item() if hasattr(impact, 'item') else impact
+
+            # 2. Safely convert to a tensor for the Gamma calculation
+            impact_tensor = torch.as_tensor(impact, device=x.device)
+            current_gamma = 1.0 - torch.clamp(impact_tensor, 0, 1).item()
+
             if self.training:
-                print(f"[PROBE] Stage {i} ({name}) -> Divergence: {impact.item():.6f} | Γ: {current_gamma:.4f}")
+                # Use impact_val (the safe float) here
+                print(f"[PROBE] Stage {i} ({name}) -> Divergence: {impact_val:.6f} | Γ: {current_gamma:.4f}")
 
             # 4. Confidence Tracking
             if i == self.current_stage_idx:

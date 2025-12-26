@@ -69,22 +69,31 @@ class SharedConceptGraph(nn.Module):
 
     def get_graph_embedding_matrix(self):
         """
-        Returns a stacked tensor of all embeddings for stage processing.
-        ENFORCES UNIT NORM: Essential to prevent Toddler-stage Hadamard blowouts.
+        Vectorized retrieval of the manifold.
+        Prevents OOM 'killed' errors by avoiding Python loops for 5000+ nodes.
         """
-        embs = []
-        for nid in self.node_order:
-            node = self.nodes[nid]
-            if node.is_tombstoned:
-                # Neutral representation to maintain sequence indices
-                embs.append(torch.zeros(self.embedding_dim, device=node.embedding.device))
-            else:
-                # Projection to Unit-Sphere ensures gain never exceeds 1.0
-                norm_emb = F.normalize(node.embedding, p=2, dim=0)
-                embs.append(norm_emb * node.alignment_score)
+        if not self.node_order:
+            return torch.zeros((1, self.embedding_dim))
 
-        return torch.stack(embs) if embs else torch.zeros((1, self.embedding_dim))
+        # 1. Bulk collect embeddings and alignment scores
+        # We use .data to avoid building a massive autograd graph for the whole manifold
+        raw_embs = torch.stack([self.nodes[nid].embedding.data for nid in self.node_order])
+        alignment_scores = torch.tensor([self.nodes[nid].alignment_score for nid in self.node_order],
+                                        device=raw_embs.device).unsqueeze(1)
 
+        # 2. Bulk identify tombstones (logical mask)
+        tombstone_mask = torch.tensor([0.0 if self.nodes[nid].is_tombstoned else 1.0 for nid in self.node_order],
+                                      device=raw_embs.device).unsqueeze(1)
+
+        # 3. Vectorized Normalization (The 'Unit-Sphere' Enforcement)
+        # This is done in one GPU/MPS kernel call instead of 5,582 calls
+        norm_embs = F.normalize(raw_embs, p=2, dim=1)
+
+        # 4. Apply Alignment and Tombstone masks in parallel
+        # Any node that is tombstoned or has 0 alignment becomes a zero-vector
+        final_matrix = norm_embs * alignment_scores * tombstone_mask
+
+        return final_matrix
     # --- REMEDIATION: ABLATIVE ZEROING ---
 
     def execute_topological_incineration(self, node_id):

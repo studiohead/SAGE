@@ -36,9 +36,9 @@ class SensoryFrontend(nn.Module):
         super().__init__()
         # The first layer is the only one that cares about the 'raw' shape
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, EMBED_DIM),
             nn.ReLU(),
-            nn.Linear(256, embed_dim),
+            nn.Linear(EMBED_DIM, embed_dim),
             nn.LayerNorm(embed_dim)
         )
         self.classifier = nn.Linear(embed_dim, 10)
@@ -134,7 +134,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             x = batch['input_ids'].to(device)
 
             # --- SAGE FIX: Align input with Frontend input_dim ---
-            # If we are in text mode, the frontend is now expecting EMBED_DIM (512)
+            # If we are in text mode, the frontend is now expecting EMBED_DIM (256)
             if args.data == "text":
                 if x.shape[1] > EMBED_DIM:
                     x = x[:, :EMBED_DIM]
@@ -192,6 +192,21 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
     governor.secure_save(live_graph)
     torch.save(frontend.state_dict(), f"checkpoints/FRONTEND_{stage_name.capitalize()}.pth")
 
+    # --- END OF STAGE REPORT ---
+    # Put it here, outside the epoch loop
+    graph = sage_container.graph
+    n_count = len(graph.nodes)
+    e_count = sum(len(node.connections) for node in graph.nodes.values())
+
+    print(f"\n[FINAL STAGE REPORT: {stage_name.upper()}]")
+    print(f"  + Final Manifold Size: {n_count} nodes")
+    print(f"  + Total Relational Edges: {e_count}")
+    if n_count > 1:
+        density = e_count / (n_count * (n_count - 1))
+        print(f"  + Manifold Density: {density:.6f}")
+    print(f"  + Dimensionality: {EMBED_DIM} (Target: 64)")
+    print("-" * 40)
+
     analytics.save_stage_report(stage_name)
     print(f"[+] Stage {stage_name} Complete. Weights & Graph Secured.")
 
@@ -201,6 +216,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 # -------------------------
 
 def get_sage_mnist_loader(stage_name, graph, train=True):
+    batch_size = STAGE_HYPERPARAMS.get(stage_name, {}).get('batch_size', 4)
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -215,7 +231,7 @@ def get_sage_mnist_loader(stage_name, graph, train=True):
 
     return DataLoader(
         SAGEDataset(samples, graph, transform=lambda x: x.view(-1)),
-        batch_size=8,
+        batch_size=batch_size,
         shuffle=train,
         collate_fn=collate_sage_batch
     )
@@ -304,12 +320,6 @@ def main():
     else:
         print(f"[*] Manifold successfully verified and loaded.")
 
-    # 6. DataLoader Setup
-    loader = None
-    if args.data == "text":
-        from data.text_dataloader import get_sage_text_loader
-        loader = get_sage_text_loader(args.text_dir, graph, batch_size=64)
-
     # 7. Training Execution
     if args.mode == "train":
         if args.stage.lower() == "all" or args.up_to_stage:
@@ -320,6 +330,11 @@ def main():
             target_stages = [args.stage.capitalize()]
 
         for stage_name in target_stages:
+            # 6. DataLoader Setup
+            loader = None
+            if args.data == "text":
+                from data.text_dataloader import get_sage_text_loader
+                loader = get_sage_text_loader(args.text_dir, graph, stage_name)
             idx = STAGE_ORDER.index(stage_name)
             curr_p = f"checkpoints/SAGE_STATE_{stage_name}.pth"
             prev_p = f"checkpoints/SAGE_STATE_{STAGE_ORDER[idx - 1].capitalize()}.pth" if idx > 0 else None

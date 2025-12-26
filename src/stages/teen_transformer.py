@@ -38,37 +38,38 @@ class TeenTransformer(DevelopmentalTransformer):
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
         x: [seq_len, batch, embed_dim]
-        centroid_addresses: List of scale addresses [Fast, Mid, Slow]
+        graph_matrix: [num_nodes, dim]
         """
-        gamma = torch.tensor(0.0, device=x.device)
+        impact = torch.tensor(0.0, device=x.device)
 
-        if graph_matrix is not None:
+        if graph_matrix is not None and graph_matrix.size(0) > 0:
             seq_len, batch, embed_dim = x.shape
 
             # 1. Use Fast-scale centroid or mean graph
             if centroid_addresses and len(centroid_addresses) > 0:
                 anchor = centroid_addresses[0]
             else:
-                anchor = graph_matrix.mean(dim=0)  # [batch, embed_dim]
+                anchor = graph_matrix.mean(dim=0).flatten()[:embed_dim]
 
-            # Ensure shape: [1, batch, embed_dim] for broadcast
-            anchor_context = anchor.unsqueeze(0)
-            if anchor_context.shape[1] != batch:
-                anchor_context = anchor_context.expand(1, batch, embed_dim)
-            anchor_context = anchor_context.expand(seq_len, batch, embed_dim)
+            # Ensure shape: [seq, batch, embed_dim] for broadcast
+            anchor_context = anchor.view(1, 1, -1).expand(seq_len, batch, embed_dim)
 
             # 2. Gumbel-softmax gate
-            gate_logits = self.gate_predictor(x)  # [seq, batch, 2]
+            gate_logits = self.gate_predictor(x)
             if self.training:
+                # Wi acts as temperature (tau)
                 gate = F.gumbel_softmax(gate_logits, tau=max(0.1, Wi), hard=True)
             else:
                 gate = F.softmax(gate_logits, dim=-1)
 
-            # 3. Integrate paths with proper broadcasting
+            # 3. Integrate paths
             x_integrated = gate[..., 0:1] * x + gate[..., 1:2] * anchor_context
 
-            # 4. Comparative Geometric Divergence
-            gamma = F.mse_loss(x_integrated, x).detach()
+            # 4. Standardized Divergence (Cosine Similarity based)
+            # We measure how much the 'integrated' path deviates from the 'internal' path
+            cos_sim = F.cosine_similarity(x_integrated, x, dim=-1).mean()
+            impact = 1.0 - torch.clamp(cos_sim, 0, 1)
+
             x = self.norm(x_integrated)
 
         # 5. Transformer stack
@@ -78,4 +79,4 @@ class TeenTransformer(DevelopmentalTransformer):
         # 6. Output refinement
         x = self.refiner_norm(x)
 
-        return self.stage_weight * x, gamma
+        return self.stage_weight * x, impact
