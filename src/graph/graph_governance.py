@@ -1,7 +1,6 @@
 # src/graph/graph_governance.py
 import os
 import torch
-import fcntl
 import logging
 from typing import Optional
 
@@ -12,97 +11,84 @@ logger = logging.getLogger("GraphGovernance")
 class GraphGovernance:
     """
     Manages the persistence and integrity of the SharedConceptGraph.
-    Enforces atomic saves and file-locking to prevent state drift
-    during multi-stage/multi-model checkpointing.
+    Uses atomic 'Save-and-Swap' to ensure state integrity without
+    relying on fragile filesystem locks (fcntl).
     """
 
     def __init__(self, graph_path: str = "checkpoints/global_manifold.pth"):
         self.graph_path = graph_path
-        self.lock_path = f"{graph_path}.lock"
+        # Removed self.lock_path to prevent 'lock file' creation
 
         # Ensure the directory exists
         os.makedirs(os.path.dirname(self.graph_path), exist_ok=True)
 
     def secure_save(self, graph: torch.nn.Module, metadata: Optional[dict] = None):
-        """
-        Performs an atomic 'Save-and-Swap'.
-        Writes to a temporary file first, then renames to the target.
-        """
-        # Create or open the lock file
-        with open(self.lock_path, "w") as lock_file:
-            try:
-                # Exclusive lock (LOCK_EX) - prevents other reads/writes
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            # 1. Grab the PyTorch state (likely empty, but good for buffers)
+            graph_state = graph.state_dict()
 
-                # --- INTEGRITY GATE: PRE-SAVE VALIDATION ---
-                # Check for geometric blowouts before allowing a write to disk.
-                graph_state = graph.state_dict()
-                for key, tensor in graph_state.items():
-                    if torch.is_tensor(tensor):
-                        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-                            logger.error(f"[Governance] FATAL: {key} contains NaN/Inf. Aborting save to protect manifold.")
-                            return False
+            # 2. MANUALLY grab the nodes (The missing 512-dim data)
+            nodes_data = {
+                node_id: {
+                    'embedding': node.embedding.data.cpu(),
+                    'alignment_score': node.alignment_score,
+                    'connections': node.connections
+                } for node_id, node in graph.nodes.items()
+            }
 
-                temp_path = f"{self.graph_path}.tmp"
+            # Your existing integrity check
+            for node_id, data in nodes_data.items():
+                if torch.isnan(data['embedding']).any():
+                    logger.error(f"[Governance] FATAL: Node {node_id} contains NaN.")
+                    return False
 
-                # Capture the graph state
-                # Note: We save the state_dict of the SharedConceptGraph specifically
-                state_to_save = {
-                    "graph_state": graph_state,
-                    "node_order": getattr(graph, "node_order", []),
-                    "metadata": metadata or {}
-                }
+            temp_path = f"{self.graph_path}.tmp"
 
-                torch.save(state_to_save, temp_path)
+            # 3. Add 'nodes_data' to the save dictionary
+            state_to_save = {
+                "graph_state": graph_state,
+                "nodes_data": nodes_data,  # <--- This makes Toddler work
+                "node_order": getattr(graph, "node_order", []),
+                "anchor_tensor": getattr(graph, "anchor_tensor", {}),
+                "metadata": metadata or {}
+            }
 
-                # Atomic rename (POSIX compliant)
-                os.replace(temp_path, self.graph_path)
+            torch.save(state_to_save, temp_path)
+            os.replace(temp_path, self.graph_path)
 
-                logger.info(f"[Governance] Manifold state secured at {self.graph_path}")
-                return True
-
-            except Exception as e:
-                logger.error(f"[Governance] Critical Save Failure: {e}")
-                if 'temp_path' in locals() and os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return False
-            finally:
-                # Unlock
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-
-    def secure_load(self, graph: torch.nn.Module):
-        """
-        Loads the manifold state into the graph instance with a shared lock.
-        """
-        if not os.path.exists(self.graph_path):
-            logger.warning(f"[Governance] No manifold file found at {self.graph_path}. Starting fresh.")
+            logger.info(f"[Governance] Manifold state secured at {self.graph_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[Governance] Critical Save Failure: {e}")
             return False
 
-        # Create lock file if it doesn't exist to allow reading
-        if not os.path.exists(self.lock_path):
-            open(self.lock_path, 'a').close()
+    def secure_load(self, graph: torch.nn.Module):
+        if not os.path.exists(self.graph_path):
+            return False
+        try:
+            device = next(graph.parameters()).device if list(graph.parameters()) else "cpu"
+            checkpoint = torch.load(self.graph_path, map_location=device)
 
-        with open(self.lock_path, "r") as lock_file:
-            try:
-                # Shared lock (LOCK_SH) - others can read, but no one can write
-                fcntl.flock(lock_file, fcntl.LOCK_SH)
+            # 1. RECONSTRUCT the ConceptNode objects first
+            nodes_data = checkpoint.get("nodes_data", {})
+            from src.graph.shared_concept_graph import ConceptNode
 
-                # Map location ensures weights are loaded to the correct device
-                device = next(graph.parameters()).device
-                checkpoint = torch.load(self.graph_path, weights_only=False, map_location=device)
+            for node_id, data in nodes_data.items():
+                node = ConceptNode(node_id, embedding_dim=graph.embedding_dim)
+                node.embedding.data.copy_(data['embedding'])
+                node.alignment_score = data['alignment_score']
+                node.connections = data['connections']
+                graph.nodes[node_id] = node
 
-                # Load weights into the SharedConceptGraph
-                graph.load_state_dict(checkpoint["graph_state"])
+            # 2. Restore Order and Anchors
+            graph.node_order = checkpoint.get("node_order", [])
+            graph.anchor_tensor = checkpoint.get("anchor_tensor", {})
 
-                # Restore topological metadata
-                if "node_order" in checkpoint:
-                    graph.node_order = checkpoint["node_order"]
+            # 3. Final State Dict check (for any other Module properties)
+            graph.load_state_dict(checkpoint.get("graph_state", {}), strict=False)
 
-                logger.info(f"[Governance] Manifold successfully restored from {self.graph_path}")
-                return True
-
-            except Exception as e:
-                logger.error(f"[Governance] Load Failure: {e}")
-                return False
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+            logger.info(f"[Governance] Manifold RESTORED: {len(graph.nodes)} nodes identified.")
+            return True
+        except Exception as e:
+            logger.error(f"Load Failure: {e}")
+            return False

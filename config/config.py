@@ -1,6 +1,6 @@
 # --- Core model structure (shared across all stages) ---
 SHARED_MODEL_CONFIG = {
-    "embed_dim": 128,      # Embedding dimension
+    "embed_dim": 512,      # Embedding dimension
     "nhead": 8,            # Attention heads
     "head_dim": 16,        # Each head's dimension
     "num_layers": 48       # Maximum layers in the full model stack
@@ -13,8 +13,8 @@ SHARED_MODEL_CONFIG = {
 STAGE_HYPERPARAMS = {
     "Infant": {
         "layer_start": 0,
-        "layer_end": 12,
-        "training_layers": 12,  # Foundational grounding
+        "layer_end": 4,
+        "training_layers": 4,  # Foundational grounding
         "epsilon_scale": 0.1,
         "learning_rate": 1e-3,
         "weight_decay": 1e-5,
@@ -26,9 +26,9 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Toddler": {
-        "layer_start": 10,      # Handshake: Overlaps Layers 10 & 11 from Infant
-        "layer_end": 20,        # Ownership block
-        "training_layers": 10,   # Actual training focus
+        "layer_start": 2,      # Handshake: Overlaps Layers 10 & 11 from Infant
+        "layer_end": 8,        # Ownership block
+        "training_layers": 6,   # Actual training focus
         "epsilon_scale": 0.08,
         "learning_rate": 8e-4,
         "weight_decay": 1e-5,
@@ -40,9 +40,9 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Preschool": {
-        "layer_start": 18,      # Handshake: Overlaps Layers 18 & 19 from Toddler
-        "layer_end": 28,
-        "training_layers": 10,
+        "layer_start": 6,      # Handshake: Overlaps Layers 18 & 19 from Toddler
+        "layer_end": 14,
+        "training_layers": 8,
         "epsilon_scale": 0.05,
         "learning_rate": 5e-4,
         "weight_decay": 5e-6,
@@ -54,8 +54,8 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Gradeschool": {
-        "layer_start": 26,      # Handshake: Overlaps Layers 26 & 27 from Preschool
-        "layer_end": 36,
+        "layer_start": 12,      # Handshake: Overlaps Layers 26 & 27 from Preschool
+        "layer_end": 22,
         "training_layers": 10,
         "epsilon_scale": 0.03,
         "learning_rate": 4e-4,
@@ -68,9 +68,9 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Teen": {
-        "layer_start": 34,      # Handshake: Overlaps Layers 34 & 35 from Gradeschool
-        "layer_end": 42,
-        "training_layers": 8,
+        "layer_start": 20,      # Handshake: Overlaps Layers 34 & 35 from Gradeschool
+        "layer_end": 32,
+        "training_layers": 10,
         "epsilon_scale": 0.02,
         "learning_rate": 3e-4,
         "weight_decay": 1e-6,
@@ -82,9 +82,9 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Adult": {
-        "layer_start": 40,      # Handshake: Overlaps Layers 40 & 41 from Teen
-        "layer_end": 46,
-        "training_layers": 6,
+        "layer_start": 20,      # Handshake: Overlaps Layers 40 & 41 from Teen
+        "layer_end": 30,
+        "training_layers": 10,
         "epsilon_scale": 0.01,
         "learning_rate": 2e-4,
         "weight_decay": 1e-6,
@@ -96,9 +96,9 @@ STAGE_HYPERPARAMS = {
         "epochs": 5
     },
     "Elder": {
-        "layer_start": 44,      # Handshake: Overlaps Layers 44 & 45 from Adult
-        "layer_end": 48,        # Final synthesis
-        "training_layers": 4,   # Capstone
+        "layer_start": 28,      # Handshake: Overlaps Layers 44 & 45 from Adult
+        "layer_end": 40,        # Final synthesis
+        "training_layers": 12,   # Capstone
         "epsilon_scale": 0.0,
         "learning_rate": 5e-5,
         "weight_decay": 0,

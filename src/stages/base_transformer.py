@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from config.config import SHARED_MODEL_CONFIG
+
+
+EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
 
 class DevelopmentalTransformer(nn.Module):
@@ -10,7 +14,7 @@ class DevelopmentalTransformer(nn.Module):
     Implements the core geometric operators defined in Patent Paragraph [0013].
     """
 
-    def __init__(self, embed_dim=128, num_heads=8):
+    def __init__(self, embed_dim=EMBED_DIM, num_heads=8):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads

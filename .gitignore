@@ -6,6 +6,7 @@ data/
 *.onnx
 
 checkpoints/
+analytics/
 # Ignore logs and trace files from the Auditor
 logs/
 *.log

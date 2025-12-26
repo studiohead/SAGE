@@ -29,7 +29,7 @@ class PreschoolTransformer(DevelopmentalTransformer):
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
-        x: [seq, batch, 128]
+        x: [seq, batch, embed_dim]
         graph_matrix: Likely arriving as [8192] or [batch, 8192]
         """
         gamma_divergence = torch.tensor(0.0, device=x.device)
@@ -37,8 +37,8 @@ class PreschoolTransformer(DevelopmentalTransformer):
         if graph_matrix is not None:
             # 1. FORCE REALIGNMENT
             # If we are getting a flattened 8192, we must reconstruct the node-space
-            # 8192 / 128 = 64 nodes.
-            working_graph = graph_matrix.view(-1, self.embed_dim)  # [64, 128]
+            # 8192 / 512 = 16 nodes.
+            working_graph = graph_matrix.view(-1, self.embed_dim)  # [16, 512]
 
             # 2. ANCHOR ALIGNMENT
             if centroid_addresses and len(centroid_addresses) > 2:
@@ -49,25 +49,25 @@ class PreschoolTransformer(DevelopmentalTransformer):
                 anchor_slow = working_graph.mean(dim=0)
 
             # 3. SALIENCY CALCULATION
-            # Project nodes: [64, 128] -> [64, 128]
+            # Project nodes: [64, 128] -> [16, 512]
             G_projected = self.saliency_proj(working_graph)
 
-            # anchor_slow: [128] -> [128, 1) for matmul
-            # logits: [64, 1]
+            # anchor_slow: [512] -> [512, 1) for matmul
+            # logits: [16, 1]
             relevance_logits = torch.matmul(G_projected, anchor_slow.view(self.embed_dim, 1))
             saliency_weights = F.softmax(relevance_logits / (self.embed_dim ** 0.5), dim=0)
 
             # 4. KNOWLEDGE INTEGRATION
-            # G_projected: [64, 128], weights: [64, 1]
-            # essence: [128]
+            # G_projected: [16, 512], weights: [16, 1]
+            # essence: [512]
             focused_essence = torch.sum(G_projected * saliency_weights, dim=0)
 
             # 5. BROADCAST PREP
-            # Explicitly force essence to [1, 1, 128]
+            # Explicitly force essence to [1, 1, 512]
             essence_context = focused_essence.reshape(1, 1, self.embed_dim)
 
             # 6. ADDITION
-            # a (128) + b (128)
+            # a (512) + b (512)
             x_context = x + (Wi * essence_context)
 
             gamma_divergence = F.mse_loss(x_context, x).detach()

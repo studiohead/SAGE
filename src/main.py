@@ -28,11 +28,13 @@ from src.stages.elder_transformer import ElderTransformer
 
 # Aligned with config.py keys
 STAGE_ORDER = ["Infant", "Toddler", "Preschool", "Gradeschool", "Teen", "Adult", "Elder"]
+EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
 
 class SensoryFrontend(nn.Module):
-    def __init__(self, input_dim, embed_dim=128):
+    def __init__(self, input_dim, embed_dim=EMBED_DIM):
         super().__init__()
+        # The first layer is the only one that cares about the 'raw' shape
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
@@ -42,12 +44,10 @@ class SensoryFrontend(nn.Module):
         self.classifier = nn.Linear(embed_dim, 10)
 
     def forward(self, x, sage_container, graph_matrix=None):
-        if x.dim() == 4:  # MNIST: [B, C, H, W]
-            x_flat = x.view(x.size(0), -1)
-        else:  # Text: [B, max_tokens]
-            x_flat = x  # Already flattened to fixed length (784)
+        # We handle flattening or reshaping here based on the input
+        x_flat = x.view(x.size(0), -1)
 
-        latent = self.encoder(x_flat)
+        latent = self.encoder(x_flat)  # Always ends up as [Batch, embed_dim]
         sage_input = latent.unsqueeze(0)
 
         if graph_matrix is not None:
@@ -133,10 +133,15 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         for batch in loader:
             x = batch['input_ids'].to(device)
 
-            if args.data == "text" and x.shape[1] != 784:
-                padded = torch.zeros((x.size(0), 784), device=device)
-                padded[:, :x.size(1)] = x[:, :784]
-                x = padded
+            # --- SAGE FIX: Align input with Frontend input_dim ---
+            # If we are in text mode, the frontend is now expecting EMBED_DIM (512)
+            if args.data == "text":
+                if x.shape[1] > EMBED_DIM:
+                    x = x[:, :EMBED_DIM]
+                elif x.shape[1] < EMBED_DIM:
+                    padded = torch.zeros((x.size(0), EMBED_DIM), device=device)
+                    padded[:, :x.size(1)] = x
+                    x = padded
 
             g_matrix = batch['graph_matrix'].to(device)
             y = batch['labels'].to(device) if args.data == "mnist" else None
@@ -210,7 +215,7 @@ def get_sage_mnist_loader(stage_name, graph, train=True):
 
     return DataLoader(
         SAGEDataset(samples, graph, transform=lambda x: x.view(-1)),
-        batch_size=64,
+        batch_size=8,
         shuffle=train,
         collate_fn=collate_sage_batch
     )
@@ -236,15 +241,22 @@ def main():
 
     analytics = SAGEAnalyticsEngine()
     from src.graph.graph_governance import GraphGovernance
-    governor = GraphGovernance("checkpoints/global_manifold.pth")
-    graph = SharedConceptGraph(embedding_dim=128)
-    manifold_loaded = governor.secure_load(graph)
-    auditor = SageAuditor(graph, mode=args.audit_level)
 
-    if args.data == "mnist":
-        frontend = SensoryFrontend(input_dim=784, embed_dim=128)
-    else:
-        frontend = SensoryFrontend(input_dim=784, embed_dim=128)
+    # 1. Initialize Core Components
+    governor = GraphGovernance("checkpoints/global_manifold.pth")
+    graph = SharedConceptGraph(embedding_dim=EMBED_DIM)
+
+    # 2. Attempt Manifold Load
+    manifold_loaded = governor.secure_load(graph)
+
+    # 3. Artifact Check: Identify if the system has established history
+    checkpoint_dir = "checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    existing_states = [f for f in os.listdir(checkpoint_dir) if f.startswith("SAGE_STATE_")]
+    system_has_history = len(existing_states) > 0 or os.path.exists(governor.graph_path)
+
+    # 4. Initialize Models - SAGE FIX: Initialize input_dim based on data type
+    frontend = SensoryFrontend(input_dim=EMBED_DIM, embed_dim=EMBED_DIM)
 
     stage_models = {
         "Infant": InfantTransformer(),
@@ -255,71 +267,76 @@ def main():
         "Adult": AdultTransformer(),
         "Elder": ElderTransformer(),
     }
+
+    auditor = SageAuditor(graph, mode=args.audit_level)
     sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor)
 
-    # Initial Load Logic
+    # 5. THE ARTIFACT-BASED SEEDING GATE
     if args.load:
         path = f"checkpoints/SAGE_STATE_{args.load.capitalize()}.pth"
-        ckpt = torch.load(path, map_location="cpu")
-        if 'frontend_state' in ckpt:
-            frontend.load_state_dict(ckpt['frontend_state'])
-        sage_container.load_state_dict(ckpt.get('sage_state', ckpt), strict=False)
-        print(f"[*] Initial Load: {path}")
-    elif not manifold_loaded:
-        print("[!] No Manifold found. Seeding...")
-        seeder = SAGEGraphSeeder(graph, frontend)
-        seeder.seed_all(data.seeder_concepts.BROAD_CONCEPTS, {i: torch.rand(1, 784) for i in range(10)})
-        governor.secure_save(graph)
+        if os.path.exists(path):
+            ckpt = torch.load(path, map_location="cpu")
+            if 'frontend_state' in ckpt:
+                frontend.load_state_dict(ckpt['frontend_state'])
+            sage_container.load_state_dict(ckpt.get('sage_state', ckpt), strict=False)
+            print(f"[*] Initial Load: {path}")
+        else:
+            print(f"FATAL: Requested load path {path} does not exist. Aborting.")
+            import sys
+            sys.exit(1)
 
-    # DataLoader Setup
+    elif system_has_history and not manifold_loaded:
+        print(f"\n[!] DATA INTEGRITY ALERT")
+        print(f"[!] Found existing state: {existing_states}")
+        print(f"[!] Manifold at {governor.graph_path} failed to load or is busy.")
+        print("[!] ACTION: Clear any ghost processes or check file permissions.")
+        print("[!] SEEDING ABORTED to protect conceptual history.")
+        import sys
+        sys.exit(1)
+
+    elif not system_has_history:
+        print("[!] Fresh System Detected. Seeding initial concepts...")
+        seeder = SAGEGraphSeeder(graph, frontend)
+        # SAGE FIX: Seeding vectors must match the frontend input_dim
+        seed_dim = EMBED_DIM
+        seeder.seed_all(data.seeder_concepts.BROAD_CONCEPTS, {i: torch.rand(1, seed_dim) for i in range(10)})
+        governor.secure_save(graph)
+    else:
+        print(f"[*] Manifold successfully verified and loaded.")
+
+    # 6. DataLoader Setup
     loader = None
     if args.data == "text":
         from data.text_dataloader import get_sage_text_loader
         loader = get_sage_text_loader(args.text_dir, graph, batch_size=64)
 
-    # -------------------------
-    # Training (Unified Dynamic Relay)
-    # -------------------------
+    # 7. Training Execution
     if args.mode == "train":
-        # 1. Determine the target range of stages
         if args.stage.lower() == "all" or args.up_to_stage:
             start_idx = STAGE_ORDER.index(args.load.capitalize()) if args.load else 0
             end_idx = STAGE_ORDER.index(args.up_to_stage.capitalize()) + 1 if args.up_to_stage else len(STAGE_ORDER)
             target_stages = STAGE_ORDER[start_idx:end_idx]
         else:
-            # Single stage requested: still treat as a relay target
             target_stages = [args.stage.capitalize()]
 
-        # 2. Iterate through targets and handle weight inheritance
         for stage_name in target_stages:
             idx = STAGE_ORDER.index(stage_name)
-
-            # Look for current stage checkpoint (to resume) or previous stage (to inherit)
             curr_p = f"checkpoints/SAGE_STATE_{stage_name}.pth"
             prev_p = f"checkpoints/SAGE_STATE_{STAGE_ORDER[idx - 1].capitalize()}.pth" if idx > 0 else None
 
-            # Priority: Resume existing work > Inherit from parent stage
             load_p = curr_p if os.path.exists(curr_p) else (prev_p if prev_p and os.path.exists(prev_p) else None)
 
             if load_p:
                 print(f"[*] Relay: Injecting {load_p} into {stage_name}")
-                # Load to CPU first to avoid VRAM fragmentation before run_train_cycle moves it
                 ckpt = torch.load(load_p, map_location="cpu")
-
-                # Extract state dict based on your SAGEContainer.save_agnostic_stage format
                 state = ckpt.get('model_state', ckpt.get('sage_state', ckpt))
-
-                # strict=False allows for the "Muscles" (Transformer layers) to shift
-                # between stage-specific architectures (Infant -> Toddler)
                 sage_container.load_state_dict(state, strict=False)
 
-            # Execute the surgical training for this stage
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
         print(f"[MANIFOLD] Conceptual Variance: {compute_manifold_variance(graph):.6f}")
 
-    # Clean shutdown of the Auditor thread/processes
     auditor.shutdown()
 
 

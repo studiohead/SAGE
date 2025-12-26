@@ -2,10 +2,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from config.config import SHARED_MODEL_CONFIG
+
+
+EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
 
 class ConceptNode:
-    def __init__(self, node_id, embedding_dim=128):
+    def __init__(self, node_id, embedding_dim=EMBED_DIM):
         self.node_id = node_id
         # Weights represent the structural material of the concept
         # Initialized with lower variance to aid early stability
@@ -20,7 +24,7 @@ class ConceptNode:
 
 
 class SharedConceptGraph(nn.Module):
-    def __init__(self, embedding_dim=128, lambda_ewma=0.1, promotion_threshold=0.7):
+    def __init__(self, embedding_dim=EMBED_DIM, lambda_ewma=0.1, promotion_threshold=0.7):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.nodes = {}

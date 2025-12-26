@@ -64,7 +64,7 @@ class SAGEContainer(nn.Module):
 
         # Infer hidden dim from the first available stage model
         sample_transformer = next(iter(stage_models.values()))
-        self.hidden_dim = getattr(sample_transformer, 'embed_dim', 128)
+        self.hidden_dim = getattr(sample_transformer, 'embed_dim', 512)
         self.fusion = StageFusion(len(stage_models), self.hidden_dim)
 
     def update_plasticity_window(self, cumulative=False):

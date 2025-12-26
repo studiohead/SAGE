@@ -1,25 +1,12 @@
+# src/graph/graph_seeder.py
 import torch
 from tqdm import tqdm
+from config.config import SHARED_MODEL_CONFIG
 from src.graph.shared_concept_graph import ConceptNode
 
-# Example list of 100 broad semantic concepts
-BROAD_CONCEPTS = [
-    "person", "animal", "plant", "vehicle", "building", "food", "tool", "furniture",
-    "clothing", "sport", "music", "emotion", "color", "weather", "nature", "technology",
-    "transport", "education", "health", "medicine", "science", "art", "literature", "language",
-    "history", "geography", "mathematics", "physics", "chemistry", "biology", "economics",
-    "politics", "law", "philosophy", "religion", "mythology", "storytelling", "game", "toy",
-    "instrument", "dance", "festival", "holiday", "celebration", "social", "family", "friendship",
-    "communication", "media", "entertainment", "internet", "computer", "robot", "energy", "environment",
-    "space", "time", "emotion", "memory", "dream", "fear", "love", "anger", "happiness", "sadness",
-    "curiosity", "knowledge", "skill", "job", "career", "finance", "market", "trade", "industry",
-    "agriculture", "transportation", "infrastructure", "city", "village", "ocean", "river", "mountain",
-    "forest", "desert", "lake", "animal behavior", "human behavior", "cognition", "perception",
-    "decision making", "ethics", "morality", "strategy", "problem solving", "technology use",
-    "innovation", "creativity", "design", "architecture", "engineering", "mathematics concept"
-]
 
-# src/graph/graph_seeder.py
+EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
+
 
 class SAGEGraphSeeder:
     """
@@ -61,7 +48,6 @@ class SAGEGraphSeeder:
 
         with torch.no_grad():
             for node_id, raw_pattern in pattern_dict.items():
-                # Project raw pattern (e.g., 784 pixels) -> Manifold (128 dims)
                 vector = self.model.encoder(raw_pattern).squeeze(0)
                 self._inject_to_node(node_id, vector)
 
@@ -93,7 +79,7 @@ class SAGEGraphSeeder:
             else:
                 # Convert concept names to dummy tensors if frontend only
                 print("[*] Converting semantic concepts to tensors for SensoryFrontend...")
-                tensor_dict = {i: torch.rand(1, 784) for i in range(len(semantic_concepts))}
+                tensor_dict = {i: torch.rand(1, EMBED_DIM) for i in range(len(semantic_concepts))}
                 self.seed_from_sensory_patterns(tensor_dict)
 
         if sensory_patterns:
