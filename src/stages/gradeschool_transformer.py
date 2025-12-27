@@ -35,6 +35,7 @@ class GradeschoolTransformer(DevelopmentalTransformer):
         ])
 
         self.subspace_proj = nn.Linear(embed_dim, embed_dim)
+        self.anchor_proj = nn.Linear(embed_dim, embed_dim)
         self.refiner = nn.LayerNorm(embed_dim)
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):

@@ -195,13 +195,16 @@ class SharedConceptGraph(nn.Module):
             return torch.zeros((1, self.embedding_dim), device=current_device)
         return torch.stack(context_tensors)
 
-    def update_stage_aware_hebbian(self, attention_map, batch_indices=None, stage_plasticity=1.0):
+    def update_stage_aware_hebbian(self, attention_map, batch_indices=None, stage_plasticity=1.0, threshold=None):
         """
-        Hebbian Relational Update: Maps associations between nodes based on attention.
-        Surgically hardened to prevent empty tensor stack crashes.
+        Hebbian Relational Update with Dynamic Orthogonality Bypass.
+        Surgically hardened to prevent empty tensor stack crashes and force edge birth.
         """
         if not self.node_order:
             return 0
+
+        # Use passed threshold (e.g., 0.0 for Infants) or fall back to system default (0.7)
+        active_threshold = threshold if threshold is not None else self.promotion_threshold
 
         # 1. Collect and Validate IDs
         if batch_indices is None:
@@ -209,31 +212,29 @@ class SharedConceptGraph(nn.Module):
             limit = min(attention_map.size(1), len(self.node_order))
             active_ids = self.node_order[:limit]
         else:
-            # SURGICAL FIX: Filter for unique IDs that actually exist in the graph
-            # This prevents KeyErrors and ensures we only stack valid Parameters
+            # Filter for unique IDs that actually exist in the graph
             unique_indices = list(set(batch_indices))
             active_ids = [str(nid) for nid in unique_indices if str(nid) in self.nodes]
 
-        # --- THE SURGICAL EMPTY GUARD ---
         if not active_ids:
-            # In the Infant stage, we often process text with no known concept matches yet.
-            # We exit silently instead of crashing on torch.stack().
             return 0
 
         # 2. Vectorized Similarity Calculation
         try:
-            # Stacking parameters directly on the current device
+            # Normalize active embeddings for consistent cosine similarity check against the manifold
             active_embs = torch.stack([self.nodes[nid].embedding.data for nid in active_ids])
-            full_manifold = self.get_graph_embedding_matrix().detach()
+            active_embs = F.normalize(active_embs, p=2, dim=1)
 
-            # Compute cross-similarity between active nodes and the entire graph
+            # get_graph_embedding_matrix() handles normalization of the target manifold
+            full_manifold = self.get_graph_embedding_matrix().detach()
             cross_sim = torch.mm(active_embs, full_manifold.t())
         except Exception as e:
             print(f"[!] Hebbian Compute Error: {e}")
             return 0
 
         # 3. Association Promotion (Edge Birth)
-        mask = cross_sim > self.promotion_threshold
+        # In the Infant stage, a 0.0 threshold allows random vectors to connect.
+        mask = cross_sim > active_threshold
         indices = mask.nonzero(as_tuple=False)
         new_edges_born = 0
 

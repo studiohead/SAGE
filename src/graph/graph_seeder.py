@@ -25,9 +25,9 @@ class SAGEGraphSeeder:
         print(f"[*] Seeding {len(concept_dictionary)} nodes into the Manifold...")
         for node_id, concept_name in concept_dictionary.items():
             with torch.no_grad():
-                # Ensure the semantic encoder returns a tensor on the right device
                 vector = self.model.encode(concept_name, convert_to_tensor=True).to(self.device)
-            self._inject_to_node(node_id, vector)
+            # Pass concept_name as the label
+            self._inject_to_node(node_id, vector, label=concept_name)
         print("[+] Manifold Seeding Complete.")
 
     def seed_from_sensory_patterns(self, pattern_dict):
@@ -49,17 +49,19 @@ class SAGEGraphSeeder:
 
         print("[+] Manifold Grounding Complete.")
 
-    def _inject_to_node(self, node_id, vector):
+    def _inject_to_node(self, node_id, vector, label=None):  # Added label param
         node_key = str(node_id)
         if node_key not in self.graph.nodes:
             self.graph.add_node(node_id)
 
-        # Unit-Sphere Enforcement
+        # --- NEW: Assign label for Dataloader lookup ---
+        if label:
+            self.graph.nodes[node_key].label = str(label)
+
         if vector.norm() > 0:
             vector = vector / vector.norm()
 
         with torch.no_grad():
-            # Ensure the vector is on the same device as the parameter
             self.graph.nodes[node_key].embedding.copy_(vector.to(self.device))
 
         self.graph.update_local_centroid(node_id)

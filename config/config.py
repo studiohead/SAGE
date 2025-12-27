@@ -23,7 +23,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 1.0,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 800},
         "batch_size": 6,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.1,  # Forced wiring
     },
     "Toddler": {
         "layer_start": 2,      # Handshake: Overlaps Layers 10 & 11 from Infant
@@ -37,7 +38,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.95,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 600},
         "batch_size": 4,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.2,  # Low bar for visual discovery
     },
     "Preschool": {
         "layer_start": 6,      # Handshake: Overlaps Layers 18 & 19 from Toddler
@@ -51,7 +53,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.9,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 400},
         "batch_size": 4,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.5,  # Starting to require logic
     },
     "Gradeschool": {
         "layer_start": 12,      # Handshake: Overlaps Layers 26 & 27 from Preschool
@@ -65,7 +68,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.85,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
         "batch_size": 1,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.7,  # Standard rigor
     },
     "Teen": {
         "layer_start": 20,      # Handshake: Overlaps Layers 34 & 35 from Gradeschool
@@ -79,7 +83,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.8,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 150},
         "batch_size": 1,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.7,  # Standard rigor
     },
     "Adult": {
         "layer_start": 20,      # Handshake: Overlaps Layers 40 & 41 from Teen
@@ -93,7 +98,8 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.7,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
         "batch_size": 1,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.7,  # Standard rigor
     },
     "Elder": {
         "layer_start": 28,      # Handshake: Overlaps Layers 44 & 45 from Adult
@@ -107,6 +113,7 @@ STAGE_HYPERPARAMS = {
         "plasticity_scale": 0.5,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 50},
         "batch_size": 1,
-        "epochs": 5
+        "epochs": 5,
+        "confidence_threshold": 0.7,  # Standard rigor
     }
 }

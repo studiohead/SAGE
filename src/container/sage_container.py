@@ -146,7 +146,10 @@ class SAGEContainer(nn.Module):
             )
 
             # 3. Numerical Stability
-            impact_tensor = torch.as_tensor(impact, device=x.device)
+            if isinstance(impact, dict):
+                impact_tensor = impact.get("gamma_divergence", torch.tensor(0.0, device=x.device))
+            else:
+                impact_tensor = torch.as_tensor(impact, device=x.device)
             if torch.isnan(impact_tensor) or torch.isnan(out).any():
                 impact_tensor = torch.tensor(1.0, device=x.device)
                 out = torch.nan_to_num(out, nan=0.0)
@@ -157,7 +160,8 @@ class SAGEContainer(nn.Module):
             stage_outputs.append(out)
 
             # 4. Telemetry Extraction
-            current_gamma = 1.0 - torch.clamp(impact_tensor, 0, 1)
+            current_confidence = torch.exp(-impact_tensor)
+            current_gamma = current_confidence
 
             if i == self.current_stage_idx:
                 final_telemetry.update({

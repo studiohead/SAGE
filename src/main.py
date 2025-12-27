@@ -20,11 +20,16 @@ from src.monitoring.health_tracker import ManifoldHealthTracker
 
 # Data & Stage Imports
 from data.sage_dataloader import SAGEDataset, collate_sage_batch
+# --- SURGICAL IMPORT: Using your new dataset class ---
+from data.mnist_dataloader import SageMNISTDataset
+
 from src.stages.infant_transformer import InfantTransformer
 from src.stages.toddler_transformer import ToddlerTransformer
 from src.stages.preschool_transformer import PreschoolTransformer
 from src.stages.gradeschool_transformer import GradeschoolTransformer
 from src.stages.teen_transformer import TeenTransformer
+from src.stages.adult_transformer import AdultTransformer
+from src.stages.elder_transformer import ElderTransformer
 
 # Note: Add Adult/Elder imports here if they exist in your stages dir
 
@@ -89,10 +94,9 @@ def compute_manifold_variance(graph: SharedConceptGraph):
     return torch.mean(torch.stack(variances)).item() if variances else 0.0
 
 
-## -------------------------
-# TRAINING CYCLE
-# -------------------------
-
+##################
+# TRAINING
+##################
 def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader=None):
     # Detect Hardware: Priority MPS (Mac) > CUDA > CPU
     if torch.backends.mps.is_available():
@@ -105,7 +109,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
     os.makedirs("checkpoints", exist_ok=True)
 
     # 1. THE SURGICAL SUTURE (Conditional Freezing)
-    # First, lock everything in the container globally
     for param in sage_container.parameters():
         param.requires_grad = False
 
@@ -115,9 +118,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
     if stage_key in sage_container.stages:
         target_stage = sage_container.stages[stage_key]
 
-        # HANDSHAKE LOGIC:
-        # Only unlock gradients if this loop matches the actual target stage.
-        # Otherwise, keep it in eval() for a pure forward-pass handshake.
         if stage_key == target_arg_stage:
             print(f"[*] ACTIVE TRAINING: Unlocking {stage_key} gradients.")
             target_stage.train()
@@ -135,8 +135,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         print(f"WARNING: Stage {stage_key} not found in container.")
         return
 
-    # Frontend must stay trainable to project into the Manifold
-    # This is the "bridge" that learns to map MNIST pixels to Text nodes
     for param in frontend.parameters():
         param.requires_grad = True
 
@@ -145,8 +143,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
     # 2. Optimizer & Speed Hardening
     hparams = STAGE_HYPERPARAMS[stage_key]
-
-    # Only optimize parameters that were actually unlocked
     trainable_params = [p for p in sage_container.parameters() if p.requires_grad] + list(frontend.parameters())
 
     optimizer = optim.AdamW(trainable_params, lr=hparams["learning_rate"],
@@ -167,7 +163,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
     for epoch in range(args.epochs):
         health_tracker.check_health(stage_name, epoch)
 
-        # Only set training mode for the container if we are in the target stage
         frontend.train()
         if stage_key == target_arg_stage:
             sage_container.train()
@@ -175,49 +170,50 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             sage_container.eval()
 
         loss_total, batch_count, total_gamma = 0.0, 0, 0.0
-        telemetry = {}  # Initialize to prevent reference errors
+        telemetry = {}
 
-        # SPEED: Pre-fetch cached manifold matrix once per epoch
-        static_graph = sage_container.graph.get_graph_embedding_matrix()
+        static_graph = None
+        if stage_key != "Infant":
+            static_graph = sage_container.graph.get_graph_embedding_matrix()
 
         for batch in loader:
-            # Shift data to match Graph device (Non-blocking for MPS/CUDA)
+            # Shift data to device
             x = batch['input_ids'].to(device, non_blocking=True)
             batch_indices = batch.get('node_indices')
-            y = batch['labels'].to(device, non_blocking=True) if args.data == "mnist" else None
+            y = batch['labels'].to(device, non_blocking=True) if 'labels' in batch else None
 
-            # Toddler Centroid Injection (Preserved Umbilical)
+            # --- PROBE: INPUT & MEMORY HEARTBEAT (Fixed Subscript Error) ---
+            if batch_count % 5 == 0:
+                mem_str = ""
+                if device.type == "mps":
+                    mem_used = torch.mps.current_allocated_memory() / 1024 ** 2
+                    mem_str = f" | MPS Mem: {mem_used:.1f}MB"
+
+                # Use empty list if batch_indices is None
+                display_indices = batch_indices[:5] if batch_indices is not None else "N/A"
+                print(f"[PROBE] Batch {batch_count} | Winners: {display_indices}{mem_str}")
+
             c_addresses = batch.get('centroid_addresses')
             if c_addresses is not None:
                 c_addresses = [c.to(device, non_blocking=True) for c in c_addresses]
 
-            # Shape Correction for Text
             if args.data == "text" and x.shape[1] != EMBED_DIM:
                 padded = torch.zeros((x.size(0), EMBED_DIM), device=device)
                 padded[:, :min(x.size(1), EMBED_DIM)] = x[:, :min(x.size(1), EMBED_DIM)]
                 x = padded
+
+            current_g_matrix = static_graph if static_graph is not None else \
+                sage_container.graph.get_graph_embedding_matrix()
 
             optimizer.zero_grad(set_to_none=True)
 
             logits, telemetry = frontend(
                 x,
                 sage_container,
-                graph_matrix=static_graph,
+                graph_matrix=current_g_matrix,
                 centroid_addresses=c_addresses
             )
 
-            # Teen Active Inquiry (Preserved)
-            if stage_key == "Teen":
-                teen = sage_container.stages["Teen"]
-                if hasattr(teen, 'last_inquiry') and teen.last_inquiry is not None:
-                    node_id = teen.last_inquiry
-                    node_key = str(node_id)
-                    if node_key in sage_container.graph.nodes:
-                        label = sage_container.graph.nodes[node_key].label
-                        print(f"\n>>> [!] SAGE ACTIVE INQUIRY: '{label}' (Node {node_id})")
-
-            # Training Step
-            # If gradients are frozen for this stage, optimizer.step() effectively does nothing
             if args.data == "mnist":
                 loss = criterion(logits, y)
                 if stage_key == target_arg_stage:
@@ -225,48 +221,70 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     torch.nn.utils.clip_grad_norm_(trainable_params, hparams.get("gradient_clip", 1.0))
                     optimizer.step()
                 loss_total += loss.item()
-            else:
-                # Hebbian Relational Update (Unsupervised / Text mode)
-                # Only update the graph if this is our active training stage
-                if stage_key == target_arg_stage and telemetry.get('confidence', 0.0) > 0.7:
-                    sage_container.graph.update_stage_aware_hebbian(
-                        attention_map=telemetry.get('trace'),
-                        batch_indices=batch_indices,
-                        stage_plasticity=hparams["plasticity_scale"]
-                    )
 
-            # Accumulate Gamma (Predictive Error)
+                # --- MNIST HEBBIAN BRANCH ---
+                target_threshold = hparams.get("confidence_threshold", 0.7)
+                conf = telemetry.get('confidence', 0.0)
+
+                if (stage_key == target_arg_stage) and (conf >= target_threshold) and batch_indices is not None:
+                    trace = telemetry.get('trace')
+                    print(f" [!] Wiring Edges (Conf: {conf:.2f})...", end="", flush=True)
+                    sage_container.graph.update_stage_aware_hebbian(
+                        attention_map=trace,
+                        batch_indices=batch_indices,
+                        stage_plasticity=hparams["plasticity_scale"],
+                        threshold=target_threshold
+                    )
+                    print(" Done.")
+            else:
+                # --- TEXT BRANCH ---
+                target_threshold = hparams.get("confidence_threshold", 0.7)
+                is_infant = (stage_key == "Infant")
+
+                if is_infant and stage_key == target_arg_stage:
+                    should_update = True
+                    current_threshold = 0.0
+                else:
+                    conf = telemetry.get('confidence', 0.0)
+                    should_update = (stage_key == target_arg_stage) and (conf >= target_threshold)
+                    current_threshold = target_threshold
+
+                if should_update and batch_indices:
+                    trace = telemetry.get('trace')
+                    if is_infant or trace is None or trace.sum() == 0:
+                        trace = torch.ones((1, len(batch_indices)), device=device)
+
+                    print(f" [!] Text Wiring (Conf: {telemetry.get('confidence', 0.0):.2f})...", end="", flush=True)
+                    sage_container.graph.update_stage_aware_hebbian(
+                        attention_map=trace,
+                        batch_indices=batch_indices,
+                        stage_plasticity=hparams["plasticity_scale"],
+                        threshold=current_threshold
+                    )
+                    print(" Done.")
+
             current_gamma = telemetry.get('gamma_divergence', torch.tensor(0.0, device=device))
             total_gamma += current_gamma.item() if not torch.isnan(current_gamma) else 0.0
             batch_count += 1
 
-            # Memory Purge for Mac/GPU
-            if batch_count % 100 == 0:
-                if device.type == "cuda":
-                    torch.cuda.empty_cache()
-                elif device.type == "mps":
+            if batch_count % 50 == 0:
+                if device.type == "mps":
                     torch.mps.empty_cache()
 
-        # --- EPOCH DASHBOARD ---
         avg_loss = loss_total / max(len(loader), 1) if args.data == "mnist" else 0.0
         avg_gamma = total_gamma / max(batch_count, 1)
 
-        # Capture the manifold state (Variance is calculated here)
         snapshot = analytics.capture_snapshot(stage_name, stage_idx, epoch, avg_loss, telemetry, sage_container.graph)
-
-        # Edge counting logic
         edge_count = sum(len(node.connections) for node in sage_container.graph.nodes.values())
 
         print(f"\n[EPOCH {epoch + 1} COMPLETE]")
         print(f" > Status:      {'TRAINING' if stage_key == target_arg_stage else 'SUTURED'}")
         print(f" > Loss:        {avg_loss:.6f}")
-        print(f" > Gamma (Γ):   {avg_gamma:.6f}  (Predictive Error)")
-        print(f" > Variance:    {snapshot['metrics']['manifold_variance']:.6f} (Relational Spread)")
+        print(f" > Gamma (Γ):   {avg_gamma:.6f}")
+        print(f" > Variance:    {snapshot['metrics']['manifold_variance']:.6f}")
         print(f" > Active Edges: {edge_count}")
         print("-" * 45)
 
-    # 4. Global State Persistence
-    # Only save weights if we actually trained this stage
     if stage_key == target_arg_stage:
         sage_container.save_agnostic_stage(stage_key)
         governor.secure_save(sage_container.graph)
@@ -277,27 +295,40 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
     import gc
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    elif device.type == "mps":
+    if device.type == "mps":
         torch.mps.empty_cache()
     print(f"[+] Stage {stage_name} Complete. Hardware Purged.")
+
 
 # -------------------------
 # DATA & ENTRY
 # -------------------------
 
 def get_sage_mnist_loader(stage_name, graph, train=True, device=None):
+    """
+    Surgically repaired loader using the SageMNISTDataset class to bridge
+    MNIST patterns to seeded BROAD_CONCEPTS.
+    """
     batch_size = STAGE_HYPERPARAMS.get(stage_name.capitalize(), {}).get('batch_size', 4)
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+
     mnist_data = datasets.MNIST(root="data", train=train, download=True, transform=transform)
-    samples = [{'input_data': mnist_data[i][0], 'concepts': [mnist_data[i][1]], 'target': mnist_data[i][1]} for i in
-               range(min(len(mnist_data), 1000 if train else 500))]
+
+    # --- FIX: Bridging to the seeded strings '0'-'9' ---
+    sage_dataset = SageMNISTDataset(mnist_data, graph)
 
     # Speed: Enable pin_memory only for non-CPU devices
     use_pin = device is not None and device.type != "cpu"
-    return DataLoader(SAGEDataset(samples, graph, transform=lambda x: x.view(-1)), batch_size=batch_size, shuffle=train,
-                      collate_fn=collate_sage_batch, pin_memory=use_pin)
+
+    return DataLoader(
+        sage_dataset,
+        batch_size=batch_size,
+        shuffle=train,
+        pin_memory=use_pin
+    )
 
 
 def main():
@@ -325,6 +356,14 @@ def main():
     graph = SharedConceptGraph(embedding_dim=EMBED_DIM).to(device)
     manifold_loaded = governor.secure_load(graph)
 
+    # --- AUTO-DISCOVERY LOGIC ---
+    if not args.load:
+        for stage in reversed(STAGE_ORDER):
+            if os.path.exists(f"checkpoints/SAGE_STATE_{stage.capitalize()}.pth"):
+                args.load = stage
+                print(f"[*] AUTO-RESUME: Detected existing state '{stage}'. Loading...")
+                break
+
     # --- SURGICAL FIX: DYNAMIC INPUT DIMENSION ---
     # Detect if we are feeding 784 pixels (MNIST) or 128 latents (Text)
     input_dim = 784 if args.data == "mnist" else EMBED_DIM
@@ -332,12 +371,15 @@ def main():
 
     frontend = SensoryFrontend(input_dim=input_dim, embed_dim=EMBED_DIM).to(device)
 
+    # Include the full lifecycle to match STAGE_ORDER
     stage_models = {
         "Infant": InfantTransformer(),
         "Toddler": ToddlerTransformer(),
         "Preschool": PreschoolTransformer(),
         "Gradeschool": GradeschoolTransformer(),
-        "Teen": TeenTransformer()
+        "Teen": TeenTransformer(),
+        "Adult": AdultTransformer(),
+        "Elder": ElderTransformer()
     }
 
     auditor = SageAuditor(graph, mode=args.audit_level)
@@ -350,8 +392,6 @@ def main():
             ckpt = torch.load(path, map_location=device)
 
             # --- SURGICAL FIX: SHAPE-AWARE FRONTEND LOAD ---
-            # If we are pivoting from Text to MNIST, the frontend weights will mismatch.
-            # We catch the error to allow the manifold to load even if the frontend resets.
             try:
                 if 'frontend_state' in ckpt:
                     frontend.load_state_dict(ckpt['frontend_state'])
@@ -363,12 +403,15 @@ def main():
             print(f"FAILED: Checkpoint {path} not found.")
             sys.exit(1)
 
-    elif not manifold_loaded:
+    # --- CONDITIONAL SEEDING ---
+    if not manifold_loaded or len(graph.nodes) == 0:
+        print("[!] Empty Manifold detected. Initializing First Birth (Seeding)...")
         seeder = SAGEGraphSeeder(graph, frontend)
-        # --- SURGICAL FIX: Ensure the seeding tensors match the model's device ---
+        # Match BROAD_CONCEPTS strings "0"-"9"
+        mnist_seeds = {str(i): torch.rand(1, EMBED_DIM).to(device) for i in range(10)}
         seeder.seed_all(
             data.seeder_concepts.BROAD_CONCEPTS,
-            {i: torch.rand(1, EMBED_DIM).to(device) for i in range(10)}
+            mnist_seeds
         )
         governor.secure_save(graph)
 
@@ -382,7 +425,7 @@ def main():
             if args.data == "text":
                 from data.text_dataloader import get_sage_text_loader
                 loader = get_sage_text_loader(args.text_path, graph, stage_name)
-            # If loader is None here, run_train_cycle will trigger the MNIST loader default
+
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
