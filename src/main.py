@@ -17,6 +17,7 @@ from src.monitoring.sage_auditor import SageAuditor
 from src.graph.graph_seeder import SAGEGraphSeeder
 from src.monitoring.analytics_engine import SAGEAnalyticsEngine
 from src.monitoring.health_tracker import ManifoldHealthTracker
+from src.utils.growth_hormone import GrowthHormone
 
 # Data & Stage Imports
 from data.sage_dataloader import SAGEDataset, collate_sage_batch
@@ -214,6 +215,27 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 centroid_addresses=c_addresses
             )
 
+            # In the Teen conditional during training
+            if stage_key == "Teen":
+                teen_hparams = STAGE_HYPERPARAMS["Teen"]
+
+                growth_hormone = GrowthHormone(
+                    floor=teen_hparams.get("growth_confidence_floor", 0.3),
+                    ceiling=teen_hparams.get("confidence_threshold", 0.7)
+                )
+
+                # Growth is now driven purely by telemetry, not model-internal state
+                new_node_id = growth_hormone.maybe_create_node(
+                    telemetry=telemetry,
+                    graph=sage_container.graph
+                )
+
+                if new_node_id is not None:
+                    print(
+                        f"\n>>> [!] GROWTH-HORMONES TRIGGERED "
+                        f"(New Node Created: {new_node_id})"
+                    )
+
             if args.data == "mnist":
                 loss = criterion(logits, y)
                 if stage_key == target_arg_stage:
@@ -275,13 +297,20 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         avg_gamma = total_gamma / max(batch_count, 1)
 
         snapshot = analytics.capture_snapshot(stage_name, stage_idx, epoch, avg_loss, telemetry, sage_container.graph)
+        node_count = len(sage_container.graph.nodes)
         edge_count = sum(len(node.connections) for node in sage_container.graph.nodes.values())
+        avg_degree = edge_count / max(node_count, 1)
+        degrees = [len(node.connections) for node in sage_container.graph.nodes.values()]
+        print(f" > Max Node Degree: {max(degrees)}")
+        print(f" > Min Node Degree: {min(degrees)}")
 
         print(f"\n[EPOCH {epoch + 1} COMPLETE]")
         print(f" > Status:      {'TRAINING' if stage_key == target_arg_stage else 'SUTURED'}")
         print(f" > Loss:        {avg_loss:.6f}")
         print(f" > Gamma (Γ):   {avg_gamma:.6f}")
         print(f" > Variance:    {snapshot['metrics']['manifold_variance']:.6f}")
+        print(f" > Nodes:       {node_count}")
+        print(f" > Avg Node Degree: {avg_degree:.2f}")
         print(f" > Active Edges: {edge_count}")
         print("-" * 45)
 

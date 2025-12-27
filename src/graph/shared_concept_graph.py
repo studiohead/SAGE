@@ -79,14 +79,15 @@ class SharedConceptGraph(nn.Module):
         node = self.nodes[node_key]
         neighbors = list(node.connections.keys())
 
+        device = self.device  # ensure everything moves to the correct device
+
         if not neighbors:
-            c_v_new = node.embedding.detach().clone()
+            c_v_new = node.embedding.detach().clone().to(device)
         else:
-            # Neighbor lookup must cast keys to string
-            neighbor_embs = torch.stack([self.nodes[str(nid)].embedding.detach() for nid in neighbors])
+            neighbor_embs = torch.stack([self.nodes[str(nid)].embedding.detach() for nid in neighbors]).to(device)
             c_v_new = neighbor_embs.mean(dim=0)
 
-        z_t = self.anchor_tensor.get(node_id, c_v_new).to(self.device)
+        z_t = self.anchor_tensor.get(node_id, c_v_new).to(device)
         updated_z = (1.0 - self.lambda_ewma) * z_t + self.lambda_ewma * c_v_new
         self.anchor_tensor[node_id] = F.normalize(updated_z, p=2, dim=0)
 
@@ -272,3 +273,33 @@ class SharedConceptGraph(nn.Module):
         if not hasattr(self, "stage_anchors"): self.stage_anchors = {}
         if stage_idx not in self.stage_anchors:
             self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim, device=self.device)
+
+    def create_node_from_trace(self, trace):
+        """
+        Create a new ConceptNode from a given trace.
+        Trace can be a tensor or dict containing relevant embedding info.
+        Returns the new node's ID.
+        """
+        # Generate a new node ID
+        if self.node_order:
+            new_node_id = max(int(nid) for nid in self.node_order) + 1
+        else:
+            new_node_id = 0
+
+        # Create and register the new node
+        new_node = ConceptNode(new_node_id, embedding_dim=self.embedding_dim).to(self.device)
+        if isinstance(trace, torch.Tensor):
+            with torch.no_grad():
+                new_node.embedding.copy_(trace.view(-1)[:self.embedding_dim].to(self.device))
+
+        # If trace is more complex (dict), you could extract other fields here
+
+        node_key = str(new_node_id)
+        self.nodes[node_key] = new_node
+        self.node_order.append(node_key)
+        self.version += 1
+
+        # Optional: Update local centroid immediately
+        self.update_local_centroid(new_node_id)
+
+        return new_node_id

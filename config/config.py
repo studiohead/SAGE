@@ -85,6 +85,7 @@ STAGE_HYPERPARAMS = {
         "batch_size": 1,
         "epochs": 5,
         "confidence_threshold": 0.7,  # Standard rigor
+        "growth_confidence_floor": 0.51
     },
     "Adult": {
         "layer_start": 20,      # Handshake: Overlaps Layers 40 & 41 from Teen
