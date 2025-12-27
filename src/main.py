@@ -308,7 +308,7 @@ def main():
     parser.add_argument("--load", type=str)
     parser.add_argument("--up_to_stage", default=None)
     parser.add_argument("--data", choices=["mnist", "text"], default="mnist")
-    parser.add_argument("--text_dir", type=str, default="training_data/lit1.txt")
+    parser.add_argument("--text_path", type=str, default="training_data/lit1.txt")
     parser.add_argument("--audit_level",
                         choices=["SAGE_DELEGATED", "FORCED_INCINERATE", "FORCED_TOMBSTONE", "DISABLED"],
                         default="SAGE_DELEGATED")
