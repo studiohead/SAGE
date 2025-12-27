@@ -24,6 +24,10 @@ class SageAuditor:
         self.breach_queue.put(event)
 
     def _audit_loop(self):
+        """
+        Background process that reconciles trust breaches with the Manifold.
+        Updated with Hardware-Agnostic Version Gating to prevent MPS/CPU race conditions.
+        """
         while self.is_running:
             try:
                 # Wait for dispatch from SAGEContainer
@@ -36,48 +40,71 @@ class SageAuditor:
                     continue
 
                 # 2. MANIFOLD ISOLATION (Multi-Scale)
-                # Now passing the full list of scale addresses for precise isolation
                 target_ids = self.find_target_nodes(
                     event['reasoning_trace'],
                     event['centroid_addresses']
                 )
 
-                # 3. EXECUTE REMEDIATION PHYSICS
-                for node_id in target_ids:
-                    if action == "INCINERATE":
-                        # ABLATIVE ZEROING: Physical weight destruction + gradient masking
-                        self.graph.execute_topological_incineration(node_id)
+                if not target_ids:
+                    self.breach_queue.task_done()
+                    continue
 
-                    elif action == "TOMBSTONE":
-                        # NULL-SPACE ROTATION: Displaces vector into non-addressable subspace
-                        r_tomb = self._generate_null_space_projection(self.graph.embedding_dim)
-                        self.graph.execute_manifold_tombstone(node_id, r_tomb)
+                # 3. EXECUTE REMEDIATION PHYSICS (Locked & Synced)
+                # We request the lock to pause the Transformer's hardware stream
+                # just long enough to perform the mutation.
+                self.graph.request_mutation_lock()
 
-                    elif action == "DISABLED":
-                        # NO_ACTION mode: skip remediation
-                        pass
+                try:
+                    with torch.no_grad():
+                        for node_id in target_ids:
+                            if action == "INCINERATE":
+                                # ABLATIVE ZEROING: Physical weight destruction
+                                self.graph.execute_topological_incineration(node_id)
 
-                # 4. TOPOLOGICAL UPDATING
-                # Perform cleanup across all temporal resolutions only if remediation is enabled
+                            elif action == "TOMBSTONE":
+                                # NULL-SPACE ROTATION: Displace to non-addressable subspace
+                                r_tomb = self._generate_null_space_projection(self.graph.embedding_dim)
+
+                                # CRITICAL: Ensure the Tombstone Key is on the correct hardware
+                                r_tomb = r_tomb.to(self.graph.device)
+
+                                self.graph.execute_manifold_tombstone(node_id, r_tomb)
+
+                            elif action == "DISABLED":
+                                pass
+                finally:
+                    # Release the hardware stream immediately after surgery
+                    self.graph.release_mutation_lock()
+
+                # 4. TOPOLOGICAL UPDATING (Metadata Cleanup)
+                # These operations are usually dictionary-based, but we keep them
+                # outside the main lock to minimize latency.
                 for address in event['centroid_addresses']:
                     if action == "INCINERATE":
-                        self.graph.delete_centroid_coordinate(address)
+                        # Logic to handle centroid coordinate removal
+                        if hasattr(self.graph, 'delete_centroid_coordinate'):
+                            self.graph.delete_centroid_coordinate(address)
                     elif action == "TOMBSTONE":
-                        self.graph.mark_centroid_as_quarantined(address)
-                    elif action == "DISABLED":
-                        # NO_ACTION mode: skip updates
-                        pass
+                        # Flag address as compromised
+                        if hasattr(self.graph, 'mark_centroid_as_quarantined'):
+                            self.graph.mark_centroid_as_quarantined(address)
 
                 # 5. METABOLIC FEEDBACK (HOMEOTRANSIS)
                 if self.container and len(target_ids) > 0:
+                    # Calculate percentage of manifold affected
                     impact_score = len(target_ids) / max(1, len(self.graph.node_order))
+
+                    # Notify container to adjust plasticity/LR for compensation
                     self.container.trigger_metabolic_rebound(impact_score)
 
                 self.breach_queue.task_done()
+
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"SageAuditor internal error: {e}")
+                print(f"[!] SageAuditor internal error: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
     def _decide_action(self, event):

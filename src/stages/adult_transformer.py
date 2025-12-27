@@ -1,11 +1,6 @@
-# src/stages/adult_transformer.py
-
 ##############################################################################
 # Adult | y = Softmax((Q_x * K_G^T)/sqrt(d_k)) * V_G
-# Purpose:
-# Cross-attention retrieval between input queries and graph memory.
-# Separates query, key, and value spaces for explicit information routing.
-# Represents mature, stable attention-based reasoning.
+# Purpose: High-Fidelity Multi-Head Retrieval from the Full Manifold.
 ##############################################################################
 
 import torch
@@ -16,25 +11,14 @@ from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 
 class AdultTransformer(DevelopmentalTransformer):
-    """
-    Stage 6: Selective Relational Retrieval.
-    Implements y = Softmax((Q_x * K_G^T)/sqrt(d_k)) * V_G.
-    Provides the 'Active Reasoning Path' for Stage 7 Governance.
-    """
-
     def __init__(self):
-        # 1. Pull Shared Architecture from Config
         embed_dim = SHARED_MODEL_CONFIG["embed_dim"]
         nhead = SHARED_MODEL_CONFIG["nhead"]
         super().__init__(embed_dim=embed_dim, num_heads=nhead)
 
-        # 2. Pull Stage-Specific Hyperparams from Config
         stage_cfg = STAGE_HYPERPARAMS["Adult"]
-
-        # Dynamic Layer Allocation: derived from config boundaries (e.g., 20-24)
         num_stage_layers = stage_cfg["layer_end"] - stage_cfg["layer_start"]
 
-        # 3. Transformer Stack (Managed by SAGEContainer's 4-layer sliding window)
         self.layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -44,68 +28,59 @@ class AdultTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        # 4. Relational Subspace Projection
-        self.graph_proj = nn.Linear(embed_dim, embed_dim)
+        # Separate projections for Key and Value to allow the model to
+        # index the graph differently than it retrieves from it.
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
 
-        # 5. Surgical Cross-Attention: Retrieves specific conceptual instances
         self.cross_attn = nn.MultiheadAttention(embed_dim, nhead)
-
-        # 6. Output Refinement
         self.refiner_norm = nn.LayerNorm(embed_dim)
 
-        self.plasticity_scale = stage_cfg["plasticity_scale"]
-
-    def forward(self, x, graph_matrix, Wi=1.0):
+    def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
-        Returns:
-            output: [seq_len, batch, dim]
-            impact/trace: The attention map for Stage 7.
+        x: [seq_len, batch, dim]
+        graph_matrix: [nodes, dim]
         """
-        attn_map = None
-        seq_len, batch_size, embed_dim = x.shape
+        impact = torch.tensor(0.5, device=x.device)
 
         if graph_matrix is not None:
-            # Collapse graph nodes into [batch, dim]
-            if graph_matrix.dim() > 2:
-                graph_collapsed = graph_matrix.mean(dim=0)
-            else:
-                graph_collapsed = graph_matrix
+            # 1. PREPARE THE MEMORY POOL
+            # We treat every node as a separate 'Key-Value' pair in memory
+            nodes = graph_matrix.view(-1, self.embed_dim)
 
-            # Project into relational subspace
-            G_projected = self.graph_proj(graph_collapsed)  # [batch, dim] or [1, dim]
+            # Project nodes into K and V spaces
+            # K_g shape: [Nodes, Dim]
+            K_g = self.k_proj(nodes).unsqueeze(1).expand(-1, x.size(1), -1)
+            V_g = self.v_proj(nodes).unsqueeze(1).expand(-1, x.size(1), -1)
 
-            # Ensure correct shape: [seq_len, batch, dim]
-            if G_projected.dim() == 1:
-                # single vector -> [1, batch, dim]
-                G_projected = G_projected.unsqueeze(0).expand(seq_len, batch_size, -1)
-            elif G_projected.dim() == 2:
-                # [batch, dim] -> [seq_len, batch, dim]
-                G_projected = G_projected.unsqueeze(0).expand(seq_len, -1, -1)
-            else:
-                # fallback: collapse extra dims
-                G_projected = G_projected.view(-1, embed_dim).unsqueeze(0).expand(seq_len, -1, -1)
-
-            attn_out, attn_map = self.cross_attn(
+            # 2. SURGICAL CROSS-ATTENTION
+            # Query: Input Tokens (x)
+            # Keys/Values: The Graph Manifold
+            attn_out, attn_weights = self.cross_attn(
                 query=x,
-                key=G_projected,
-                value=G_projected,
-                need_weights=True,
-                average_attn_weights=True
+                key=K_g,
+                value=V_g,
+                need_weights=True
             )
 
-            x = self.norm(x + (Wi * attn_out))
+            # 3. SELECTIVE INTEGRATION
+            # Wi (Plasticity) now acts as the 'Recall Strength'
+            x_context = x + (Wi * attn_out)
 
-        # Transformer processing
+            # 4. TELEMETRY: Entropy-Based Impact
+            # We measure how 'focused' the retrieval was.
+            # High entropy = searching everywhere; Low entropy = pinpoint recall.
+            with torch.no_grad():
+                entropy = -torch.sum(attn_weights * torch.log(attn_weights + 1e-9), dim=-1).mean()
+                # Normalize entropy by the log of node count to get impact [0, 1]
+                node_count = nodes.size(0)
+                impact = torch.clamp(entropy / torch.log(torch.tensor(node_count, dtype=torch.float)), 0, 1)
+
+            x = self.norm(x_context)
+
+        # 5. TRANSFORMER BACKBONE
         for layer in self.layers:
             x = layer(x)
 
         x = self.refiner_norm(x)
-
-        # Compute impact
-        if attn_map is not None:
-            entropy = -torch.sum(attn_map * torch.log(attn_map + 1e-9), dim=-1).mean()
-            impact = torch.clamp(entropy / 5.0, 0, 1)
-        else:
-            impact = torch.tensor(0.5, device=x.device)
-
         return self.stage_weight * x, impact

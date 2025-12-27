@@ -1,18 +1,16 @@
-# src/graph/shared_concept_graph.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from config.config import SHARED_MODEL_CONFIG
 
-
 EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
 
-class ConceptNode:
+class ConceptNode(nn.Module):
     def __init__(self, node_id, embedding_dim=EMBED_DIM):
+        super().__init__()
         self.node_id = node_id
         # Weights represent the structural material of the concept
-        # Initialized with lower variance to aid early stability
         self.embedding = nn.Parameter(torch.randn(embedding_dim) * 0.1)
         self.alignment_score = 1.0  # Plasticity multiplier (0.0 = Cauterized)
         self.connections = {}  # {neighbor_node_id: weight}
@@ -21,263 +19,255 @@ class ConceptNode:
         self.is_tombstoned = False
         self.tombstone_key = None  # R_tomb storage for recovery
         self.gradient_mask = 1.0  # Scalar for ablative freezing
+        self.stage_idx = -1
 
 
 class SharedConceptGraph(nn.Module):
     def __init__(self, embedding_dim=EMBED_DIM, lambda_ewma=0.1, promotion_threshold=0.7):
         super().__init__()
         self.embedding_dim = embedding_dim
-        self.nodes = {}
+        # Using ModuleDict so Parameters are registered and movable to GPU/MPS
+        self.nodes = nn.ModuleDict()
         self.node_order = []
         self.anchor_tensor = {}  # The 'Z' Map (Topological Anchors)
         self.lambda_ewma = lambda_ewma  # EWMA Decay for temporal drift
         self.quarantined_centroids = []  # List of addresses flagged by Auditor
         self.promotion_threshold = promotion_threshold  # threshold for "promotable" nodes
 
+        # SPEED CACHE
+        self.version = 0
+        self._cached_matrix = None
+        self._last_version = -1
+        self._cached_mask = None
+
+    @property
+    def device(self):
+        """Dynamic device detection for MacBook (CPU/MPS) or Server (CUDA)."""
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            return torch.device('cpu')
+
+    def __setstate__(self, state):
+        """Governance: Clears cache on load to prevent memory pointer corruption."""
+        super().__setstate__(state)
+        self._cached_matrix = None
+        self._last_version = -1
+        self._cached_mask = None
+
+    def add_node(self, node_id):
+        """Surgical entry point: Handles string-casting for ModuleDict."""
+        node_key = str(node_id)
+        if node_key not in self.nodes:
+            self.nodes[node_key] = ConceptNode(node_id, self.embedding_dim)
+            self.node_order.append(node_key)
+            self.version += 1
+
+    def get_node_index(self, node_id):
+        """Translates Concept ID to position in the vectorized matrix."""
+        node_key = str(node_id)
+        try:
+            return self.node_order.index(node_key)
+        except ValueError:
+            return -1
+
     # --- TOPOLOGICAL ANCHORING (EWMA) ---
 
     def update_local_centroid(self, node_id):
-        """
-        Implements EWMA Centroid Anchoring: Z_t+1 = (1 - λ)Z_t + λ(C_v_new).
-        Ensures centroids stay normalized to prevent gain-loop blowouts.
-        """
-        node = self.nodes[node_id]
+        """EWMA Centroid Anchoring: Z_t+1 = (1 - λ)Z_t + λ(C_v_new)."""
+        node_key = str(node_id)
+        node = self.nodes[node_key]
         neighbors = list(node.connections.keys())
 
         if not neighbors:
             c_v_new = node.embedding.detach().clone()
         else:
-            neighbor_embs = torch.stack([self.nodes[nid].embedding.detach() for nid in neighbors])
+            # Neighbor lookup must cast keys to string
+            neighbor_embs = torch.stack([self.nodes[str(nid)].embedding.detach() for nid in neighbors])
             c_v_new = neighbor_embs.mean(dim=0)
 
-        # Get existing anchor or initialize with current
-        z_t = self.anchor_tensor.get(node_id, c_v_new)
-
-        # Apply EWMA update and project to Unit-Sphere to prevent manifold expansion
+        z_t = self.anchor_tensor.get(node_id, c_v_new).to(self.device)
         updated_z = (1.0 - self.lambda_ewma) * z_t + self.lambda_ewma * c_v_new
         self.anchor_tensor[node_id] = F.normalize(updated_z, p=2, dim=0)
 
     def is_node_in_centroid_range(self, node_id, centroid_address, radius=0.7):
-        """
-        AUDITOR UTILITY: Checks if node is within a conceptual radius of a breach.
-        Uses Euclidean distance in Z-space.
-        """
+        """Auditor check for conceptual breaches."""
         if node_id not in self.anchor_tensor:
             return False
         z_vec = self.anchor_tensor[node_id].to(centroid_address.device)
         return torch.norm(z_vec - centroid_address) < radius
 
     def get_graph_embedding_matrix(self):
-        """
-        Vectorized retrieval of the manifold.
-        Prevents OOM 'killed' errors by avoiding Python loops for 5000+ nodes.
-        """
+        """Vectorized manifold retrieval with Cache-Optimization."""
         if not self.node_order:
-            return torch.zeros((1, self.embedding_dim))
+            return torch.zeros((1, self.embedding_dim), device=self.device)
 
-        # 1. Bulk collect embeddings and alignment scores
-        # We use .data to avoid building a massive autograd graph for the whole manifold
-        raw_embs = torch.stack([self.nodes[nid].embedding.data for nid in self.node_order])
-        alignment_scores = torch.tensor([self.nodes[nid].alignment_score for nid in self.node_order],
-                                        device=raw_embs.device).unsqueeze(1)
+        if self._cached_matrix is None or self.version != self._last_version:
+            current_device = self.device
+            raw_embs = torch.stack([self.nodes[nid].embedding for nid in self.node_order])
 
-        # 2. Bulk identify tombstones (logical mask)
-        tombstone_mask = torch.tensor([0.0 if self.nodes[nid].is_tombstoned else 1.0 for nid in self.node_order],
-                                      device=raw_embs.device).unsqueeze(1)
+            alignment_scores = torch.tensor(
+                [self.nodes[nid].alignment_score for nid in self.node_order],
+                device=current_device
+            ).unsqueeze(1)
 
-        # 3. Vectorized Normalization (The 'Unit-Sphere' Enforcement)
-        # This is done in one GPU/MPS kernel call instead of 5,582 calls
-        norm_embs = F.normalize(raw_embs, p=2, dim=1)
+            tombstone_mask = torch.tensor(
+                [0.0 if self.nodes[nid].is_tombstoned else 1.0 for nid in self.node_order],
+                device=current_device
+            ).unsqueeze(1)
 
-        # 4. Apply Alignment and Tombstone masks in parallel
-        # Any node that is tombstoned or has 0 alignment becomes a zero-vector
-        final_matrix = norm_embs * alignment_scores * tombstone_mask
+            self._cached_mask = alignment_scores * tombstone_mask
+            self._cached_matrix = raw_embs
+            self._last_version = self.version
 
-        return final_matrix
-    # --- REMEDIATION: ABLATIVE ZEROING ---
+        norm_embs = F.normalize(self._cached_matrix, p=2, dim=1)
+        return norm_embs * self._cached_mask
+
+    # --- REMEDIATION DYNAMICS ---
 
     def execute_topological_incineration(self, node_id):
-        """
-        PERMANENT: Ablative Zeroing + Gradient Masking.
-        Prevents high-entropy noise poisoning by creating a logical void.
-        """
-        if node_id in self.nodes:
-            node = self.nodes[node_id]
+        node_key = str(node_id)
+        if node_key in self.nodes:
+            node = self.nodes[node_key]
             with torch.no_grad():
-                node.embedding.zero_()  # Absolute ablation
-
+                node.embedding.zero_()
             node.connections = {}
-            node.alignment_score = 0.0  # Scar tissue (inhibits Hebbian growth)
-            node.gradient_mask = 0.0  # Freezes weight at zero permanently
+            node.alignment_score = 0.0
+            node.gradient_mask = 0.0
             node.is_tombstoned = False
-            node.tombstone_key = None
+            self.version += 1
             self.update_local_centroid(node_id)
 
-    # --- REMEDIATION: NULL-SPACE ROTATION ---
-
     def execute_manifold_tombstone(self, node_id, r_tomb):
-        """
-        REVERSIBLE: Null-Space Displacement.
-        Rotates the vector into a non-addressable subspace via R_tomb.
-        """
-        if node_id in self.nodes:
-            node = self.nodes[node_id]
+        node_key = str(node_id)
+        if node_key in self.nodes:
+            node = self.nodes[node_key]
+            r_tomb = r_tomb.to(self.device)
             node.tombstone_key = r_tomb
-
             with torch.no_grad():
-                displaced_weight = torch.matmul(node.embedding.data, r_tomb.to(node.embedding.device))
-                node.embedding.copy_(displaced_weight)
-
+                displaced = torch.matmul(node.embedding.data, r_tomb)
+                node.embedding.copy_(displaced)
             node.is_tombstoned = True
-            node.alignment_score = 0.0  # Prevent relational updates while quarantined
+            node.alignment_score = 0.0
+            self.version += 1
             self.update_local_centroid(node_id)
 
     def restore_from_tombstone(self, node_id):
-        """
-        RECOVERY: Applies Inverse Projection (R_tomb^T).
-        """
-        if node_id in self.nodes:
-            node = self.nodes[node_id]
-            if not node.is_tombstoned or node.tombstone_key is None:
-                return
-
-            # Orthogonal Restoration: R^T
+        node_key = str(node_id)
+        if node_key in self.nodes:
+            node = self.nodes[node_key]
+            if not node.is_tombstoned or node.tombstone_key is None: return
             inverse_r = node.tombstone_key.t()
             with torch.no_grad():
-                node.embedding.copy_(torch.matmul(node.embedding.data, inverse_r.to(node.embedding.device)))
-
+                restored = torch.matmul(node.embedding.data, inverse_r)
+                node.embedding.copy_(restored)
             node.is_tombstoned = False
-            node.alignment_score = 1.0  # Restore plasticity
+            node.alignment_score = 1.0
             node.tombstone_key = None
+            self.version += 1
             self.update_local_centroid(node_id)
 
-    # --- TOPOLOGICAL CLEANUP (AUDITOR STEP 4) ---
-
-    def delete_centroid_coordinate(self, address):
-        """Physically removes coordinate anchors from Z-Map after Incineration."""
-        keys_to_del = [k for k, v in self.anchor_tensor.items() if torch.equal(v, address)]
-        for k in keys_to_del:
-            del self.anchor_tensor[k]
-
-    def mark_centroid_as_quarantined(self, address):
-        """Adds a coordinate to the TCR blacklist for Stage 5+ exclusion."""
-        self.quarantined_centroids.append(address.detach().clone())
-
-    # --- O(1) MANIFOLD RETRIEVAL (TCR) ---
+    # --- MANIFOLD RETRIEVAL ---
 
     def retrieve_manifold_context(self, current_latent, top_k=5):
-        """
-        Topological Context Reservoir: Radius search in Anchor Tensor Z.
-        Excludes tombstoned (quarantined) and incinerated (ablated) nodes.
-        """
+        current_device = current_latent.device
         query_coord = current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent
-        # Normalize query to match normalized Z-space
         query_coord = F.normalize(query_coord, p=2, dim=0)
 
-        # Radius search via cosine similarity in Z-space
         scored_anchors = []
         for cid, z_vec in self.anchor_tensor.items():
-            # Check if this centroid is globally quarantined
-            is_quarantined = any(torch.norm(z_vec - q) < 0.1 for q in self.quarantined_centroids)
-            if is_quarantined:
+            z_vec = z_vec.to(current_device)
+            # Check Global Quarantine
+            if any(torch.norm(z_vec - q.to(current_device)) < 0.1 for q in self.quarantined_centroids):
                 continue
-
-            sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0).to(query_coord.device))
+            sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0))
             scored_anchors.append((cid, sim.item()))
 
-        # Select top-k manifolds
         scored_anchors.sort(key=lambda x: x[1], reverse=True)
-
         context_tensors = []
         for cid, sim_score in scored_anchors[:top_k]:
-            node = self.nodes[cid]
-            # Governance Gate: Skip if confidence is low, scarred, or tombstoned
+            node_key = str(cid)
+            node = self.nodes[node_key]
             if sim_score > 0.7 and node.alignment_score > 0.1 and not node.is_tombstoned:
-                # Return normalized context
-                context_tensors.append(F.normalize(node.embedding, p=2, dim=0).to(query_coord.device))
+                context_tensors.append(F.normalize(node.embedding, p=2, dim=0).to(current_device))
 
         if not context_tensors:
-            return torch.zeros((1, self.embedding_dim), device=query_coord.device)
-
+            return torch.zeros((1, self.embedding_dim), device=current_device)
         return torch.stack(context_tensors)
 
-    # --- GOVERNANCE-AWARE HEBBIAN UPDATES ---
-
-    def update_stage_aware_hebbian(self, attention_map, stage_plasticity=1.0):
+    def update_stage_aware_hebbian(self, attention_map, batch_indices=None, stage_plasticity=1.0):
         """
-        Updates relational weights with Scar-Tissue and Null-Space guardrails.
-        HEBBIAN DECAY: Added to prevent connection weights from accumulating to infinity.
+        Hebbian Relational Update: Maps associations between nodes based on attention.
+        Surgically hardened to prevent empty tensor stack crashes.
         """
-        if len(self.node_order) < 2 or attention_map is None:
-            return
+        if not self.node_order:
+            return 0
 
-        # Normalize attention for graph update
-        avg_att = attention_map.mean(dim=0)
+        # 1. Collect and Validate IDs
+        if batch_indices is None:
+            # Fallback to order-based slicing if no indices provided
+            limit = min(attention_map.size(1), len(self.node_order))
+            active_ids = self.node_order[:limit]
+        else:
+            # SURGICAL FIX: Filter for unique IDs that actually exist in the graph
+            # This prevents KeyErrors and ensures we only stack valid Parameters
+            unique_indices = list(set(batch_indices))
+            active_ids = [str(nid) for nid in unique_indices if str(nid) in self.nodes]
 
-        # Determine the capacity of the current sensory/latent vision
-        trace_limit = avg_att.size(0)
+        # --- THE SURGICAL EMPTY GUARD ---
+        if not active_ids:
+            # In the Infant stage, we often process text with no known concept matches yet.
+            # We exit silently instead of crashing on torch.stack().
+            return 0
 
-        for i, uid_i in enumerate(self.node_order):
-            # Guardrail 1: Trace Boundary
-            if i >= trace_limit:
-                break
+        # 2. Vectorized Similarity Calculation
+        try:
+            # Stacking parameters directly on the current device
+            active_embs = torch.stack([self.nodes[nid].embedding.data for nid in active_ids])
+            full_manifold = self.get_graph_embedding_matrix().detach()
 
-            # Guardrail 2: Key Existence
-            if uid_i not in self.nodes:
+            # Compute cross-similarity between active nodes and the entire graph
+            cross_sim = torch.mm(active_embs, full_manifold.t())
+        except Exception as e:
+            print(f"[!] Hebbian Compute Error: {e}")
+            return 0
+
+        # 3. Association Promotion (Edge Birth)
+        mask = cross_sim > self.promotion_threshold
+        indices = mask.nonzero(as_tuple=False)
+        new_edges_born = 0
+
+        for i in range(indices.size(0)):
+            row, col = indices[i]
+            uid_active, uid_target = active_ids[row], self.node_order[col]
+
+            if uid_active == uid_target:
                 continue
 
-            node_i = self.nodes[uid_i]
+            sim_val = cross_sim[row, col].item()
+            node = self.nodes[uid_active]
 
-            # Skip update for Null-Space or Ablated nodes
-            if node_i.alignment_score <= 0.0 or node_i.is_tombstoned:
-                continue
+            if uid_target not in node.connections:
+                # Log birth of a new conceptual relationship
+                print(f"[!] New Edge Born: {uid_active} <-> {uid_target} (Sim: {sim_val:.4f})")
+                current_w = 0.0
+                new_edges_born += 1
+            else:
+                current_w = node.connections[uid_target]
 
-            for j, uid_j in enumerate(self.node_order):
-                # Guardrail 1: Trace Boundary
-                if j >= trace_limit:
-                    break
+            # Hebbian rule: (Current * Decay) + (Plasticity * Activity)
+            node.connections[uid_target] = (current_w * 0.99) + (stage_plasticity * sim_val)
 
-                # Guardrail 2: Key Existence
-                if uid_j not in self.nodes:
-                    continue
-
-                if i == j or self.nodes[uid_j].is_tombstoned:
-                    continue
-
-                # Hebbian delta modulated by node alignment (trust) and attention weight
-                delta = stage_plasticity * node_i.alignment_score * avg_att[i, j]
-
-                # STABILITY FIX: Apply decay (0.99) to current weight to prevent runaway growth
-                current_w = node_i.connections.get(uid_j, 0.0)
-                node_i.connections[uid_j] = (current_w * 0.99) + delta
-
-            # Periodic EWMA update
-            if torch.rand(1).item() > 0.95:
-                self.update_local_centroid(uid_i)
+        return new_edges_born
 
     def ensure_stage_initialized(self, stage_idx):
-        """
-        Ensures all nodes are ready for a new stage.
-        """
-        # Iterate safely through the node_order
         for node_id in self.node_order:
-            if node_id not in self.nodes:
-                continue
-
-            node = self.nodes[node_id]
-
-            # Skip nodes already promoted or tombstoned
-            if getattr(node, "stage_idx", -1) >= stage_idx or node.is_tombstoned:
-                continue
-
-            # Promote if alignment_score exceeds threshold
+            node_key = str(node_id)
+            node = self.nodes[node_key]
+            if getattr(node, "stage_idx", -1) >= stage_idx or node.is_tombstoned: continue
             if node.alignment_score >= self.promotion_threshold:
                 node.stage_idx = stage_idx
 
-        # Initialize anchor for this stage if it does not exist
-        if not hasattr(self, "stage_anchors"):
-            self.stage_anchors = {}
-
+        if not hasattr(self, "stage_anchors"): self.stage_anchors = {}
         if stage_idx not in self.stage_anchors:
-            # Anchors are created in the same dimension as the manifold (128)
-            self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim)
+            self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim, device=self.device)

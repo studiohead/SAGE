@@ -21,8 +21,8 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.1,
         "gradient_clip": 1.0,
         "plasticity_scale": 1.0,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 1000},
-        "batch_size": 8,
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 800},
+        "batch_size": 6,
         "epochs": 5
     },
     "Toddler": {
@@ -35,8 +35,8 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.1,
         "gradient_clip": 1.0,
         "plasticity_scale": 0.95,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 800},
-        "batch_size": 8,
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 600},
+        "batch_size": 4,
         "epochs": 5
     },
     "Preschool": {
@@ -49,8 +49,8 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.12,
         "gradient_clip": 1.0,
         "plasticity_scale": 0.9,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 600},
-        "batch_size": 8,
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 400},
+        "batch_size": 4,
         "epochs": 5
     },
     "Gradeschool": {
@@ -63,8 +63,8 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.15,
         "gradient_clip": 1.0,
         "plasticity_scale": 0.85,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 400},
-        "batch_size": 8,
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
+        "batch_size": 1,
         "epochs": 5
     },
     "Teen": {
@@ -77,8 +77,8 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.15,
         "gradient_clip": 0.8,
         "plasticity_scale": 0.8,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 300},
-        "batch_size": 4,
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 150},
+        "batch_size": 1,
         "epochs": 5
     },
     "Adult": {
@@ -91,7 +91,7 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.2,
         "gradient_clip": 0.7,
         "plasticity_scale": 0.7,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
         "batch_size": 1,
         "epochs": 5
     },
@@ -105,7 +105,7 @@ STAGE_HYPERPARAMS = {
         "dropout": 0.25,
         "gradient_clip": 0.5,
         "plasticity_scale": 0.5,
-        "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
+        "scheduler": {"type": "linear_warmup", "warmup_steps": 50},
         "batch_size": 1,
         "epochs": 5
     }

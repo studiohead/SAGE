@@ -1,11 +1,8 @@
-# src/stages/preschool_transformer.py
-
 ##############################################################################
-# Preschool | y = x + W * sum(Softmax(G) * G)
+# Preschool | Adaptive Relational Grounding
 # Purpose:
-# Saliency-weighted node prioritization.
-# Softmax over graph activations emphasizes dominant structures.
-# Marks transition from uniform influence to attention-like behavior.
+# Saliency-weighted node prioritization via Latent Cross-Attention.
+# Bridging Toddler (Filtering) and Gradeschool (Projection).
 ##############################################################################
 
 import torch
@@ -33,56 +30,64 @@ class PreschoolTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        self.saliency_proj = nn.Linear(embed_dim, embed_dim)
+        # THE RELATIONAL BRIDGE
+        # These project the manifold into a 'Key-Value' memory space
+        self.graph_key_proj = nn.Linear(embed_dim, embed_dim)
+        self.graph_val_proj = nn.Linear(embed_dim, embed_dim)
+
+        # Saliency Gate: Decides the intensity of the grounding per token
+        self.relational_gate = nn.Linear(embed_dim, 1)
+
         self.refiner = nn.LayerNorm(embed_dim)
         self.plasticity_scale = stage_cfg["plasticity_scale"]
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
-        x: [seq, batch, embed_dim]
-        graph_matrix: Likely arriving as [8192] or [batch, 8192]
+        x: [seq_len, batch, embed_dim]
+        graph_matrix: [nodes, embed_dim]
         """
         gamma_divergence = torch.tensor(0.0, device=x.device)
 
         if graph_matrix is not None:
-            # 1. FORCE REALIGNMENT
-            # If we are getting a flattened 8192, we must reconstruct the node-space
-            # 8192 / 256 = 32 nodes.
-            working_graph = graph_matrix.reshape(-1, self.embed_dim)
+            # 1. RECONSTRUCT MANIFOLD
+            # Treat the global manifold as a pool of available concept nodes
+            nodes = graph_matrix.reshape(-1, self.embed_dim)
 
-            # 2. ANCHOR ALIGNMENT
-            if centroid_addresses and len(centroid_addresses) > 2:
-                anchor_slow = centroid_addresses[2]
-                if anchor_slow.numel() != self.embed_dim:
-                    anchor_slow = anchor_slow.view(-1, self.embed_dim).mean(dim=0)
-            else:
-                anchor_slow = working_graph.mean(dim=0)
+            # 2. GENERATE GRAPH KEYS & VALUES
+            # We map the graph nodes into a space where they can be queried
+            K_g = self.graph_key_proj(nodes)  # [Nodes, Dim]
+            V_g = self.graph_val_proj(nodes)  # [Nodes, Dim]
 
-            # 3. SALIENCY CALCULATION
-            # Project nodes: [64, 128] -> [32, 256]
-            G_projected = self.saliency_proj(working_graph)
+            # 3. CROSS-ATTENTION SALIENCY
+            # Each token (Query) looks at the Graph (Keys) to find relevant concepts
+            # x: [S, B, E] -> q: [B, S, E]
+            q = x.transpose(0, 1)
 
-            # anchor_slow: [256] -> [256, 1) for matmul
-            # logits: [32, 1]
-            relevance_logits = torch.matmul(G_projected, anchor_slow.view(self.embed_dim, 1))
-            saliency_weights = F.softmax(relevance_logits / (self.embed_dim ** 0.5), dim=0)
+            # Compute Saliency Scores: [B, S, Nodes]
+            # How much does 'Token X' care about 'Node Y'?
+            attn_scores = torch.matmul(q, K_g.transpose(0, 1)) / (self.embed_dim ** 0.5)
+            saliency_weights = F.softmax(attn_scores, dim=-1)
 
-            # 4. KNOWLEDGE INTEGRATION
-            # G_projected: [32, 256], weights: [32, 1]
-            # essence: [256]
-            focused_essence = torch.sum(G_projected * saliency_weights, dim=0)
+            # Extract Essence: [B, S, E]
+            # This is the 'Knowledge Retrieval' from the manifold
+            essence = torch.matmul(saliency_weights, V_g).transpose(0, 1)
 
-            # 5. BROADCAST PREP
-            # Explicitly force essence to [1, 1, 256]
-            essence_context = focused_essence.reshape(1, 1, self.embed_dim)
+            # 4. DYNAMIC RELATIONAL GATING
+            # Learns if the current context actually benefits from the graph
+            gate = torch.sigmoid(self.relational_gate(x))
 
-            # 6. ADDITION
-            # a (256) + b (256)
-            x_context = x + (Wi * essence_context)
+            # 5. SELECTIVE INTEGRATION
+            # We use a 0.5 multiplier to allow significant influence
+            # while maintaining the residual identity of the transformer.
+            x_context = x + (0.5 * Wi * gate * essence)
 
+            # 6. TELEMETRY
+            # Captured before Norm to see the true Relational Friction
             gamma_divergence = F.mse_loss(x_context, x).detach()
+
             x = self.norm(x_context)
 
+        # 7. TRANSFORMER BACKBONE
         for layer in self.layers:
             x = layer(x)
 
