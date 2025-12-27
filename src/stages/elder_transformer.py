@@ -39,48 +39,53 @@ class ElderTransformer(DevelopmentalTransformer):
 
     def forward(self, x, graph_matrix, centroid_addresses=None, adult_attn_map=None, Wi=1.0):
         """
-        x: [seq_len, batch, dim]
-        adult_attn_map: [batch, seq_len, nodes] - Passed from Adult Stage
+        [PATENT REF 0014]: Recursive Meta-Governance
+        adult_attn_map: [batch, seq_len, nodes] - The 'Reasoning Path'
         """
-        gamma = torch.tensor(1.0, device=x.device)  # Default to 'High Stability'
+        # 1. Path Reconstruction (Preserved)
+        path_active = torch.matmul(adult_attn_map, graph_matrix).transpose(0, 1)
 
-        if graph_matrix is not None and adult_attn_map is not None:
-            # 1. RECONSTRUCT THE 'ADULT' REASONING PATH
-            # This is what the Adult stage 'saw' in the graph.
-            # path_active: [seq_len, batch, dim]
-            path_active = torch.matmul(adult_attn_map, graph_matrix).transpose(0, 1)
+        # 2. Multi-Scale Context Centroid (Patent Step 2)
+        # We use the 'Long-term' (Slow) centroid as the Anchor
+        if centroid_addresses and len(centroid_addresses) >= 2:
+            # Anchor represents the 'Sanctioned Conceptual Manifold' [0014]
+            anchor_vec = centroid_addresses[1].mean(0)  # Long-term EWMA
+            context_anchor = anchor_vec.view(1, 1, -1).expand(path_active.size(0), -1, -1)
+        else:
+            context_anchor = path_active
 
-            # 2. ALIGN GLOBAL ANCHORS
-            if centroid_addresses and len(centroid_addresses) > 2:
-                # We prioritize the Slow-Scale (Index 2) as the 'Immutable Truth'
-                anchor_vec = centroid_addresses[2].reshape(-1, self.embed_dim).mean(0)
-                context_anchor = anchor_vec.view(1, 1, -1)  # Broadcasts to [S, B, D]
-            else:
-                context_anchor = path_active  # Self-reconciliation if centroids missing
+        # 3. Reconciliation (The Recursive Meta-Governance Layer)
+        # reconciled_path represents the 'Path_anchor' from the patent
+        reconciled_path, reconciliation_weights = self.path_reconciler(
+            query=path_active,
+            key=context_anchor,
+            value=context_anchor
+        )
 
-            # 3. RECONCILIATION (The Governance Check)
-            # We see how well the 'Active Path' aligns with the 'Global Anchor'
-            reconciled_path, _ = self.path_reconciler(
-                query=path_active,
-                key=context_anchor,
-                value=context_anchor
-            )
-
-            # 4. COMPUTE TOPOLOGICAL DIVERGENCE (Gamma)
-            # If the Elder has to change the Adult's mind a lot, Gamma drops.
+        # 4. Comparative Geometric Divergence Metric (Γ) [0014]
+        with torch.no_grad():
+            # We calculate Gamma as the distance between
+            # where the Adult went vs where the Anchor stays.
             cos_sim = F.cosine_similarity(path_active, reconciled_path, dim=-1).mean()
             gamma = torch.clamp(cos_sim, 0, 1)
 
-            # 5. INTEGRATE GOVERNED CONTEXT
-            governed_signal = self.governance_gate(reconciled_path)
-            x = x + (Wi * governed_signal)
+            # [CRITICAL UPDATE]: Identify the 'Trust-Breaching' Nodes
+            # We look for nodes in the adult_attn_map that deviate most from the anchor
+            breach_signal = (1.0 - cos_sim)
 
-        # 6. TRANSFORMER BACKBONE
+        # 5. Integration (Preserved)
+        governed_signal = self.governance_gate(reconciled_path)
+        x = x + (Wi * governed_signal)
+
+        # 6. Backbone (Preserved)
         for layer in self.layers:
             x = layer(x)
 
-        x = self.refiner_norm(x)
+        # Return the trace and (1-Gamma) as the Remediation Confidence Signal [0014]
+        # We also pass the 'breach_signal' for the SageAuditor
+        telemetry = {
+            "gamma": 1.0 - gamma.detach(),
+            "breach_nodes": adult_attn_map if gamma < 0.7 else None  # Threshold trigger
+        }
 
-        # We return 1.0 - gamma so that 'High Divergence' (Disagreement)
-        # is visible in the logs.
-        return self.stage_weight * x, 1.0 - gamma.detach()
+        return self.stage_weight * x, telemetry

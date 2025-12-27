@@ -61,14 +61,19 @@ class SageAuditor:
                                 # ABLATIVE ZEROING: Physical weight destruction
                                 self.graph.execute_topological_incineration(node_id)
 
-                            elif action == "TOMBSTONE":
-                                # NULL-SPACE ROTATION: Displace to non-addressable subspace
-                                r_tomb = self._generate_null_space_projection(self.graph.embedding_dim)
 
-                                # CRITICAL: Ensure the Tombstone Key is on the correct hardware
+                            elif action == "TOMBSTONE":
+                                # PATENT REF [0016]: Reversible Geometric Isolation
+                                # Generate the Tombstone Key (Rotation Matrix Q)
+                                r_tomb = self._generate_null_space_projection(self.graph.embedding_dim)
                                 r_tomb = r_tomb.to(self.graph.device)
 
-                                self.graph.execute_manifold_tombstone(node_id, r_tomb)
+                                # We must store the Inverse/Transpose to allow for future 'Restoration'
+                                # In an orthogonal matrix, the Transpose is the Inverse.
+                                r_restore = r_tomb.t()
+
+                                # Execute the isolation and archive the restoration key in the node metadata
+                                self.graph.execute_manifold_tombstone(node_id, r_tomb, r_restore)
 
                             elif action == "DISABLED":
                                 pass
