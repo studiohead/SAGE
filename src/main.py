@@ -381,7 +381,7 @@ def main():
             loader = None
             if args.data == "text":
                 from data.text_dataloader import get_sage_text_loader
-                loader = get_sage_text_loader(args.text_dir, graph, stage_name)
+                loader = get_sage_text_loader(args.text_path, graph, stage_name)
             # If loader is None here, run_train_cycle will trigger the MNIST loader default
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
