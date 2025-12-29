@@ -14,7 +14,7 @@ STAGE_HYPERPARAMS = {
     "Infant": {
         "layer_start": 0,
         "layer_end": 4,
-        "training_layers": 4,  # Foundational grounding
+        "training_layers": 4,
         "epsilon_scale": 0.1,
         "learning_rate": 1e-3,
         "weight_decay": 1e-5,
@@ -27,9 +27,9 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.1,  # Forced wiring
     },
     "Toddler": {
-        "layer_start": 2,      # Handshake: Overlaps Layers 10 & 11 from Infant
-        "layer_end": 8,        # Ownership block
-        "training_layers": 6,   # Actual training focus
+        "layer_start": 2,
+        "layer_end": 8,
+        "training_layers": 6,
         "epsilon_scale": 0.08,
         "learning_rate": 8e-4,
         "weight_decay": 1e-5,
@@ -42,7 +42,7 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.2,  # Low bar for visual discovery
     },
     "Preschool": {
-        "layer_start": 6,      # Handshake: Overlaps Layers 18 & 19 from Toddler
+        "layer_start": 6,
         "layer_end": 14,
         "training_layers": 8,
         "epsilon_scale": 0.05,
@@ -57,7 +57,7 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.5,  # Starting to require logic
     },
     "Gradeschool": {
-        "layer_start": 12,      # Handshake: Overlaps Layers 26 & 27 from Preschool
+        "layer_start": 12,
         "layer_end": 22,
         "training_layers": 10,
         "epsilon_scale": 0.03,
@@ -72,7 +72,7 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.7,  # Standard rigor
     },
     "Teen": {
-        "layer_start": 20,      # Handshake: Overlaps Layers 34 & 35 from Gradeschool
+        "layer_start": 20,
         "layer_end": 32,
         "training_layers": 10,
         "epsilon_scale": 0.02,
@@ -88,7 +88,7 @@ STAGE_HYPERPARAMS = {
         "growth_confidence_floor": 0.51
     },
     "Adult": {
-        "layer_start": 20,      # Handshake: Overlaps Layers 40 & 41 from Teen
+        "layer_start": 20,
         "layer_end": 30,
         "training_layers": 10,
         "epsilon_scale": 0.01,
@@ -100,12 +100,12 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
         "batch_size": 1,
         "epochs": 5,
-        "confidence_threshold": 0.7,  # Standard rigor
+        "confidence_threshold": 0.7,
     },
     "Elder": {
-        "layer_start": 28,      # Handshake: Overlaps Layers 44 & 45 from Adult
-        "layer_end": 40,        # Final synthesis
-        "training_layers": 12,   # Capstone
+        "layer_start": 28,
+        "layer_end": 40,
+        "training_layers": 12,
         "epsilon_scale": 0.0,
         "learning_rate": 5e-5,
         "weight_decay": 0,
@@ -115,6 +115,6 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 50},
         "batch_size": 1,
         "epochs": 5,
-        "confidence_threshold": 0.7,  # Standard rigor
+        "confidence_threshold": 0.7,
     }
 }

@@ -178,13 +178,19 @@ class SharedConceptGraph(nn.Module):
         scored_anchors = []
         for cid, z_vec in self.anchor_tensor.items():
             z_vec = z_vec.to(current_device)
-            # Check Global Quarantine
+            # Skip quarantined anchors
             if any(torch.norm(z_vec - q.to(current_device)) < 0.1 for q in self.quarantined_centroids):
                 continue
-            sim = F.cosine_similarity(query_coord.unsqueeze(0), z_vec.unsqueeze(0))
+
+            # Ensure both are 2D [1, embed_dim] for cosine similarity
+            qc = query_coord.unsqueeze(0) if query_coord.dim() == 1 else query_coord
+            zv = z_vec.unsqueeze(0) if z_vec.dim() == 1 else z_vec
+            sim = F.cosine_similarity(qc, zv, dim=1)  # returns [1]
             scored_anchors.append((cid, sim.item()))
 
+        # Sort top_k by similarity
         scored_anchors.sort(key=lambda x: x[1], reverse=True)
+
         context_tensors = []
         for cid, sim_score in scored_anchors[:top_k]:
             node_key = str(cid)
@@ -274,32 +280,15 @@ class SharedConceptGraph(nn.Module):
         if stage_idx not in self.stage_anchors:
             self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim, device=self.device)
 
-    def create_node_from_trace(self, trace):
-        """
-        Create a new ConceptNode from a given trace.
-        Trace can be a tensor or dict containing relevant embedding info.
-        Returns the new node's ID.
-        """
-        # Generate a new node ID
-        if self.node_order:
-            new_node_id = max(int(nid) for nid in self.node_order) + 1
-        else:
-            new_node_id = 0
-
-        # Create and register the new node
+    def create_node_from_trace(self, trace, text=None):
+        new_node_id = max([int(nid) for nid in self.node_order], default=-1) + 1
         new_node = ConceptNode(new_node_id, embedding_dim=self.embedding_dim).to(self.device)
         if isinstance(trace, torch.Tensor):
             with torch.no_grad():
                 new_node.embedding.copy_(trace.view(-1)[:self.embedding_dim].to(self.device))
-
-        # If trace is more complex (dict), you could extract other fields here
-
-        node_key = str(new_node_id)
-        self.nodes[node_key] = new_node
-        self.node_order.append(node_key)
+        new_node.text = text  # store text
+        self.nodes[str(new_node_id)] = new_node
+        self.node_order.append(str(new_node_id))
         self.version += 1
-
-        # Optional: Update local centroid immediately
         self.update_local_centroid(new_node_id)
-
         return new_node_id

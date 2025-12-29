@@ -11,6 +11,8 @@ from torchvision import datasets, transforms
 import data.seeder_concepts
 # Config & SAGE Core
 from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
+from src.inference.graph_tokenizer import GraphTokenizer
+from src.inference.sage_inference import SAGEInference
 from src.graph.shared_concept_graph import SharedConceptGraph
 from src.container.sage_container import SAGEContainer
 from src.monitoring.sage_auditor import SageAuditor
@@ -362,7 +364,7 @@ def get_sage_mnist_loader(stage_name, graph, train=True, device=None):
 
 def main():
     parser = argparse.ArgumentParser("SAGE Surgical Interface")
-    parser.add_argument("mode", choices=["train", "test_manifold"])
+    parser.add_argument("mode", choices=["train", "test_manifold", "inference"])
     parser.add_argument("--stage", default="Infant")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--load", type=str)
@@ -459,6 +461,30 @@ def main():
 
     elif args.mode == "test_manifold":
         print(f"[MANIFOLD] Conceptual Variance: {compute_manifold_variance(graph):.6f}")
+
+    # Inside main(), after your existing mode handling
+    elif args.mode == "inference":
+        print("[*] Entering SAGE Inference Mode. Type 'exit' to quit.")
+
+        # Initialize tokenizer and inference
+        tokenizer = GraphTokenizer(graph=graph)
+        sage_infer = SAGEInference(graph=graph, tokenizer=tokenizer)
+
+        print("[*] Entering SAGE Inference Mode. Type 'exit' to quit.")
+        while True:
+            prompt = input(">>> ")
+            if prompt.lower() in {"exit", "quit"}:
+                break
+            response = sage_infer.respond(prompt, top_k=5)
+            print(response)
+            print("-" * 40)
+
+        while True:
+            prompt = input(">>> ")
+            if prompt.lower() in {"exit", "quit"}:
+                break
+            response = sage_infer.respond(prompt)
+            print(response)
 
     auditor.shutdown()
 

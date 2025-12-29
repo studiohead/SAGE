@@ -24,68 +24,99 @@ class ElderTransformer(DevelopmentalTransformer):
                 d_model=embed_dim,
                 nhead=nhead,
                 dim_feedforward=embed_dim * 4,
-                dropout=stage_cfg.get("dropout", 0.25)
+                dropout=stage_cfg.get("dropout", 0.25),
+                batch_first=True
             ) for _ in range(num_stage_layers)
         ])
 
-        # The 'Judge': Maps reconciled paths back to the residual stream
         self.governance_gate = nn.Linear(embed_dim, embed_dim)
-
-        # Cross-Attention between 'What I'm thinking' (Adult Path)
-        # and 'What is True' (Centroid Anchors)
-        self.path_reconciler = nn.MultiheadAttention(embed_dim, nhead)
-
+        self.path_reconciler = nn.MultiheadAttention(embed_dim, nhead, batch_first=True)
         self.refiner_norm = nn.LayerNorm(embed_dim)
 
     def forward(self, x, graph_matrix, centroid_addresses=None, adult_attn_map=None, Wi=1.0):
         """
         [PATENT REF 0014]: Recursive Meta-Governance
-        adult_attn_map: [batch, seq_len, nodes] - The 'Reasoning Path'
-        """
-        # 1. Path Reconstruction (Preserved)
-        path_active = torch.matmul(adult_attn_map, graph_matrix).transpose(0, 1)
 
-        # 2. Multi-Scale Context Centroid (Patent Step 2)
-        # We use the 'Long-term' (Slow) centroid as the Anchor
+        x:               [batch, seq_len, embed_dim]
+        graph_matrix:    [nodes, embed_dim]
+        adult_attn_map:  [nodes, nodes]
+        """
+
+        batch, seq_len, embed_dim = x.shape
+
+        # ------------------------------------------------------------------
+        # Elder Bootstrap (Option 1)
+        # ------------------------------------------------------------------
+        if adult_attn_map is None:
+            num_nodes = graph_matrix.size(0)
+            adult_attn_map = torch.eye(
+                num_nodes,
+                device=graph_matrix.device
+            )
+
+        # ------------------------------------------------------------------
+        # 1. Path Reconstruction (Node → Embedding)
+        # ------------------------------------------------------------------
+        # [nodes, nodes] @ [nodes, embed_dim] → [nodes, embed_dim]
+        path_active = adult_attn_map @ graph_matrix
+
+        # Treat nodes as sequence, batch=1
+        path_active = path_active.unsqueeze(0)  # [1, nodes, embed_dim]
+
+        # ------------------------------------------------------------------
+        # 2. Context Anchor
+        # ------------------------------------------------------------------
         if centroid_addresses and len(centroid_addresses) >= 2:
-            # Anchor represents the 'Sanctioned Conceptual Manifold' [0014]
-            anchor_vec = centroid_addresses[1].mean(0)  # Long-term EWMA
-            context_anchor = anchor_vec.view(1, 1, -1).expand(path_active.size(0), -1, -1)
+            anchor = centroid_addresses[1].mean(0)  # [embed_dim]
+            context_anchor = anchor.view(1, 1, -1).expand(
+                1, path_active.size(1), embed_dim
+            )
         else:
             context_anchor = path_active
 
-        # 3. Reconciliation (The Recursive Meta-Governance Layer)
-        # reconciled_path represents the 'Path_anchor' from the patent
-        reconciled_path, reconciliation_weights = self.path_reconciler(
+        # ------------------------------------------------------------------
+        # 3. Recursive Meta-Governance
+        # ------------------------------------------------------------------
+        reconciled_path, _ = self.path_reconciler(
             query=path_active,
             key=context_anchor,
             value=context_anchor
         )
 
-        # 4. Comparative Geometric Divergence Metric (Γ) [0014]
+        reconciled_path = self.refiner_norm(reconciled_path)
+
+        # ------------------------------------------------------------------
+        # 4. Divergence Metric Γ
+        # ------------------------------------------------------------------
         with torch.no_grad():
-            # We calculate Gamma as the distance between
-            # where the Adult went vs where the Anchor stays.
-            cos_sim = F.cosine_similarity(path_active, reconciled_path, dim=-1).mean()
-            gamma = torch.clamp(cos_sim, 0, 1)
+            cos_sim = F.cosine_similarity(
+                path_active.squeeze(0),
+                reconciled_path.squeeze(0),
+                dim=-1
+            ).mean()
+            gamma = torch.clamp(cos_sim, 0.0, 1.0)
 
-            # [CRITICAL UPDATE]: Identify the 'Trust-Breaching' Nodes
-            # We look for nodes in the adult_attn_map that deviate most from the anchor
-            breach_signal = (1.0 - cos_sim)
+        # ------------------------------------------------------------------
+        # 5. Governance Signal (GLOBAL → SEQUENCE)
+        # ------------------------------------------------------------------
+        # Collapse node dimension → single governing vector
+        governor = reconciled_path.mean(dim=1)          # [1, embed_dim]
+        governor = self.governance_gate(governor)        # [1, embed_dim]
 
-        # 5. Integration (Preserved)
-        governed_signal = self.governance_gate(reconciled_path)
-        x = x + (Wi * governed_signal)
+        # Broadcast across sequence
+        governor = governor.unsqueeze(1).expand(batch, seq_len, embed_dim)
 
-        # 6. Backbone (Preserved)
+        x = x + (Wi * governor)
+
+        # ------------------------------------------------------------------
+        # 6. Backbone
+        # ------------------------------------------------------------------
         for layer in self.layers:
             x = layer(x)
 
-        # Return the trace and (1-Gamma) as the Remediation Confidence Signal [0014]
-        # We also pass the 'breach_signal' for the SageAuditor
         telemetry = {
             "gamma": 1.0 - gamma.detach(),
-            "breach_nodes": adult_attn_map if gamma < 0.7 else None  # Threshold trigger
+            "breach_nodes": adult_attn_map if gamma < 0.7 else None
         }
 
         return self.stage_weight * x, telemetry
