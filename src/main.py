@@ -174,6 +174,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
         loss_total, batch_count, total_gamma = 0.0, 0, 0.0
         telemetry = {}
+        active_nodes = []
 
         static_graph = None
         if stage_key != "Infant":
@@ -192,7 +193,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     mem_used = torch.mps.current_allocated_memory() / 1024 ** 2
                     mem_str = f" | MPS Mem: {mem_used:.1f}MB"
 
-                # Use empty list if batch_indices is None
                 display_indices = batch_indices[:5] if batch_indices is not None else "N/A"
                 print(f"[PROBE] Batch {batch_count} | Winners: {display_indices}{mem_str}")
 
@@ -205,8 +205,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 padded[:, :min(x.size(1), EMBED_DIM)] = x[:, :min(x.size(1), EMBED_DIM)]
                 x = padded
 
-            current_g_matrix = static_graph if static_graph is not None else \
-                sage_container.graph.get_graph_embedding_matrix()
+            current_g_matrix = static_graph if static_graph is not None else sage_container.graph.get_graph_embedding_matrix()
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -217,27 +216,28 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 centroid_addresses=c_addresses
             )
 
-            # In the Teen conditional during training
+            # --- TEEN STAGE: NODE GROWTH ---
             if stage_key == "Teen":
                 teen_hparams = STAGE_HYPERPARAMS["Teen"]
-
                 growth_hormone = GrowthHormone(
                     floor=teen_hparams.get("growth_confidence_floor", 0.3),
                     ceiling=teen_hparams.get("confidence_threshold", 0.7)
                 )
 
-                # Growth is now driven purely by telemetry, not model-internal state
+                if 'raw_texts' in batch and len(batch['raw_texts']) > 0:
+                    telemetry['text'] = batch['raw_texts'][0]
+
                 new_node_id = growth_hormone.maybe_create_node(
                     telemetry=telemetry,
                     graph=sage_container.graph
                 )
 
                 if new_node_id is not None:
-                    print(
-                        f"\n>>> [!] GROWTH-HORMONES TRIGGERED "
-                        f"(New Node Created: {new_node_id})"
-                    )
+                    active_nodes.append(new_node_id)
+                    assigned_label = sage_container.graph.nodes[str(new_node_id)].label
+                    print(f"\n>>> [!] GROWTH-HORMONES TRIGGERED (New Node: {new_node_id} | Label: '{assigned_label}')")
 
+            # --- MNIST TRAINING ---
             if args.data == "mnist":
                 loss = criterion(logits, y)
                 if stage_key == target_arg_stage:
@@ -246,10 +246,9 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     optimizer.step()
                 loss_total += loss.item()
 
-                # --- MNIST HEBBIAN BRANCH ---
+                # Hebbian wiring
                 target_threshold = hparams.get("confidence_threshold", 0.7)
                 conf = telemetry.get('confidence', 0.0)
-
                 if (stage_key == target_arg_stage) and (conf >= target_threshold) and batch_indices is not None:
                     trace = telemetry.get('trace')
                     print(f" [!] Wiring Edges (Conf: {conf:.2f})...", end="", flush=True)
@@ -260,8 +259,9 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                         threshold=target_threshold
                     )
                     print(" Done.")
+
+            # --- TEXT TRAINING ---
             else:
-                # --- TEXT BRANCH ---
                 target_threshold = hparams.get("confidence_threshold", 0.7)
                 is_infant = (stage_key == "Infant")
 
@@ -291,9 +291,34 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             total_gamma += current_gamma.item() if not torch.isnan(current_gamma) else 0.0
             batch_count += 1
 
-            if batch_count % 50 == 0:
-                if device.type == "mps":
-                    torch.mps.empty_cache()
+            if batch_count % 50 == 0 and device.type == "mps":
+                torch.mps.empty_cache()
+
+        # --- ACTIVE NODE PRUNING POST-BATCH ---
+        if active_nodes:
+            variances = []
+            for node_id in active_nodes:
+                node_key = str(node_id)
+                if node_key not in sage_container.graph.nodes:
+                    continue
+                node = sage_container.graph.nodes[node_key]
+                if node.is_tombstoned or node.alignment_score <= 0.0:
+                    continue
+                diffs = []
+                for other in sage_container.graph.nodes.values():
+                    if other.is_tombstoned or other.alignment_score <= 0.0:
+                        continue
+                    diffs.append(torch.sum((other.embedding - node.embedding.to(other.embedding.device)) ** 2))
+                if diffs:
+                    variances.append(torch.mean(torch.stack(diffs)))
+            tightness = torch.mean(torch.stack(variances)).item() if variances else 0.0
+
+            sage_container.graph.adaptive_prune(
+                nodes_to_consider=active_nodes,
+                tightness=tightness,
+                max_tightness=hparams.get("max_manifold_tightness", 0.0008),
+                prune_fraction=hparams.get("prune_fraction", 0.05)
+            )
 
         avg_loss = loss_total / max(len(loader), 1) if args.data == "mnist" else 0.0
         avg_gamma = total_gamma / max(batch_count, 1)
@@ -329,7 +354,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
     if device.type == "mps":
         torch.mps.empty_cache()
     print(f"[+] Stage {stage_name} Complete. Hardware Purged.")
-
 
 # -------------------------
 # DATA & ENTRY

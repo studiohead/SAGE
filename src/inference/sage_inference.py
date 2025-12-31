@@ -7,31 +7,37 @@ class SAGEInference:
         self.tokenizer = tokenizer
 
     def respond(self, prompt, top_k=5):
-        # Tokenize the prompt into latent representation
+        """
+        Retrieves semantic labels from the graph based on the prompt.
+        Optimized to use direct node lookup instead of tensor comparison.
+        """
+        # 1. Tokenize/Encode the prompt
         if hasattr(self.tokenizer, "encode"):
-            prompt_emb = self.tokenizer.encode(prompt).unsqueeze(0)  # [1, embed_dim]
+            # Ensure we get a tensor back
+            prompt_emb = self.tokenizer.encode(prompt, convert_to_tensor=True)
+            if prompt_emb.dim() == 1:
+                prompt_emb = prompt_emb.unsqueeze(0)
         else:
             raise RuntimeError("Tokenizer must have an encode() method.")
 
-        # Move to same device as graph
+        # 2. Alignment
         device = self.graph.device
         prompt_emb = prompt_emb.to(device)
 
-        # Retrieve top-k nearest nodes
-        context_tensors = self.graph.retrieve_manifold_context(prompt_emb, top_k=top_k)
+        # 3. Retrieve Context (Returns list of tuples: [(tensor, node_id), ...])
+        context_data = self.graph.retrieve_manifold_context(prompt_emb, top_k=top_k)
 
+        # 4. Extract Labels directly from the Graph nodes
         response_texts = []
-        for i, tensor in enumerate(context_tensors):
-            # Try to find the corresponding node
-            node_id = None
-            for nid, node in self.graph.nodes.items():
-                if torch.allclose(F.normalize(node.embedding, p=2, dim=0), F.normalize(tensor, p=2, dim=0)):
-                    node_id = nid
-                    break
-
-            if node_id is not None:
-                node = self.graph.nodes[node_id]
+        for _, node_id in context_data:
+            # We already have the ID, so lookup is O(1)
+            node_key = str(node_id)
+            if node_key in self.graph.nodes:
+                node = self.graph.nodes[node_key]
+                # Priority: 'label' property -> 'node_id' string fallback
                 label = getattr(node, "label", None)
-                response_texts.append(label if label is not None else str(node_id))  # always string
+                response_texts.append(str(label) if label is not None else node_key)
             else:
-                response_texts.append("")  # fallback empty string
+                response_texts.append("") # Fallback for ghost indices
+
+        return response_texts

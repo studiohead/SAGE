@@ -36,16 +36,16 @@ class SAGEGraphSeeder:
         the Frontend's encoder. Fixes the MPS/CPU mismatch.
         """
         print(f"[*] Seeding {len(pattern_dict)} nodes via Sensory Projection...")
-
-        # Pull device once to avoid overhead in the loop
         target_device = self.device
 
         with torch.no_grad():
             for node_id, raw_pattern in pattern_dict.items():
-                # --- CRITICAL FIX: Move pattern to MPS before encoding ---
                 raw_pattern = raw_pattern.to(target_device)
                 vector = self.model.encoder(raw_pattern).squeeze(0)
-                self._inject_to_node(node_id, vector)
+
+                # --- UPDATE: Pass node_id as the label if it's a concept string ---
+                # This ensures "A", "B", "0" are stored as labels immediately.
+                self._inject_to_node(node_id, vector, label=str(node_id))
 
         print("[+] Manifold Grounding Complete.")
 
@@ -68,17 +68,22 @@ class SAGEGraphSeeder:
 
     def seed_all(self, semantic_concepts=None, sensory_patterns=None):
         if semantic_concepts:
+            # Check if it's a list (like your symbols) and convert to a dict
+            if isinstance(semantic_concepts, list):
+                # Use the index as the node_id and the character as the concept_name
+                semantic_concepts = {str(i): char for i, char in enumerate(semantic_concepts)}
+
             if hasattr(self.model, "encode"):
                 self.seed(semantic_concepts)
             else:
                 print("[*] Converting semantic concepts to tensors for SensoryFrontend...")
-                # --- FIX: Generate tensors directly on the correct device ---
                 target_device = self.device
-                tensor_dict = {
-                    i: torch.rand(1, EMBED_DIM).to(target_device)
-                    for i in range(len(semantic_concepts))
-                }
-                self.seed_from_sensory_patterns(tensor_dict)
+
+                # Now .items() will work regardless of the original input format
+                for i, (node_id, concept_name) in enumerate(semantic_concepts.items()):
+                    dummy_pattern = torch.rand(1, EMBED_DIM).to(target_device)
+                    vector = self.model.encoder(dummy_pattern).squeeze(0)
+                    self._inject_to_node(node_id, vector, label=concept_name)
 
         if sensory_patterns:
             self.seed_from_sensory_patterns(sensory_patterns)

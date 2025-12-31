@@ -7,11 +7,13 @@ from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
+
 class StageFusion(nn.Module):
     """
     Implements Hierarchical Abstraction Fusion.
     Uses Intrinsic Centroid Anchoring to weight stage consensus.
     """
+
     def __init__(self, num_stages, hidden_dim):
         super().__init__()
         self.centroid_comparator = nn.Linear(hidden_dim, num_stages)
@@ -50,7 +52,6 @@ class SAGEContainer(nn.Module):
         self.stages = nn.ModuleDict(stage_models)
         self.thresholds = thresholds
 
-        # RESTORED SURGICAL STATE
         self.layer_start = layer_start
         self.layer_end = layer_end
         self.training_layers = training_layers
@@ -61,20 +62,17 @@ class SAGEContainer(nn.Module):
             self.auditor.container = self
 
         self.current_stage_idx = 0
-        self.eta = 1.0  # Global Plasticity Factor (Wi)
+        self.eta = 1.0
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Infer hidden dim from the first available stage model
         sample_transformer = next(iter(stage_models.values()))
         self.hidden_dim = getattr(sample_transformer, 'embed_dim', EMBED_DIM)
         self.fusion = StageFusion(len(stage_models), self.hidden_dim)
 
-        # SPEED OPTIMIZATION: Graph Matrix Cache
         self._cached_matrix = None
         self._last_graph_version = -1
 
     def _get_cached_graph_matrix(self):
-        """Prevents O(N) reconstruction of the manifold every batch."""
         current_version = getattr(self.graph, 'version', 0)
         if self._cached_matrix is None or current_version != self._last_graph_version:
             self._cached_matrix = self.graph.get_graph_embedding_matrix().to(self.device)
@@ -95,7 +93,6 @@ class SAGEContainer(nn.Module):
             if name in self.stages:
                 all_layers.extend(self.stages[name].layers)
 
-        # Surgical Thaw
         for i in range(start, min(end, len(all_layers))):
             layer = all_layers[i]
             for param in layer.parameters():
@@ -113,11 +110,9 @@ class SAGEContainer(nn.Module):
             "trace": None
         }
 
-        # Use cached matrix if none provided to avoid CPU/GPU bottleneck
         if graph_matrix is None:
             graph_matrix = self._get_cached_graph_matrix()
 
-        # Manifold Hardening
         if torch.isnan(graph_matrix).any():
             graph_matrix = torch.nan_to_num(graph_matrix, nan=0.0)
 
@@ -129,15 +124,21 @@ class SAGEContainer(nn.Module):
 
             model = self.stages[name]
 
-            # 1. Contextual Augmentation (Teen Retrieval logic restored)
+            # Contextual Augmentation
             x_aug = x
             if i >= 4:  # Teen stage and above
+                # memory_block is a list of tuples: [(embedding, node_id), ...]
                 memory_block = self.graph.retrieve_manifold_context(x.mean(0))
-                if memory_block is not None and memory_block.size(0) > 0:
-                    mem_expanded = memory_block.unsqueeze(1).expand(-1, x.size(1), -1)
+
+                if memory_block is not None and len(memory_block) > 0:
+                    # Unpack the list of tuples into a stacked tensor of embeddings
+                    context_tensors = torch.stack([item[0] for item in memory_block])
+
+                    # Align dimensions for transformer concatenation
+                    mem_expanded = context_tensors.unsqueeze(1).expand(-1, x.size(1), -1)
                     x_aug = torch.cat([x, mem_expanded], dim=0)
 
-            # 2. Model Execution (Passing Centroids for Toddler Gating index [1])
+            # Model Execution
             out, impact = model(
                 x_aug,
                 graph_matrix,
@@ -145,11 +146,12 @@ class SAGEContainer(nn.Module):
                 Wi=self.eta
             )
 
-            # 3. Numerical Stability
+            # Numerical Stability
             if isinstance(impact, dict):
                 impact_tensor = impact.get("gamma_divergence", torch.tensor(0.0, device=x.device))
             else:
                 impact_tensor = torch.as_tensor(impact, device=x.device)
+
             if torch.isnan(impact_tensor) or torch.isnan(out).any():
                 impact_tensor = torch.tensor(1.0, device=x.device)
                 out = torch.nan_to_num(out, nan=0.0)
@@ -159,19 +161,17 @@ class SAGEContainer(nn.Module):
 
             stage_outputs.append(out)
 
-            # 4. Telemetry Extraction
+            # Telemetry Extraction
             current_confidence = torch.exp(-impact_tensor)
-            current_gamma = current_confidence
-
             if i == self.current_stage_idx:
                 final_telemetry.update({
-                    "confidence": current_gamma.item(),
+                    "confidence": current_confidence.item(),
                     "gamma_divergence": impact_tensor,
                     "category": "STRUCTURAL_ERROR" if i < 4 else "FACTUAL_DISPUTE",
                     "trace": out.detach()
                 })
 
-        # 5. Hierarchical Fusion
+        # Hierarchical Fusion
         fused_output = self.fusion(x, stage_outputs) if len(stage_outputs) > 1 else stage_outputs[0]
         final_telemetry["trace"] = fused_output
 
@@ -182,13 +182,14 @@ class SAGEContainer(nn.Module):
         addr_mid = (x_input.mean(0) * 0.7 + trace.mean(0) * 0.3).mean(0).detach()
         addr_slow = trace.mean(dim=0).mean(dim=0).detach()
 
-        self.auditor.report_candidate_breach({
-            "confidence": confidence,
-            "divergence": 1.0 - confidence,
-            "category": category,
-            "reasoning_trace": trace.detach().clone(),
-            "centroid_addresses": [addr_fast, addr_mid, addr_slow]
-        })
+        if self.auditor:
+            self.auditor.report_candidate_breach({
+                "confidence": confidence,
+                "divergence": 1.0 - confidence,
+                "category": category,
+                "reasoning_trace": trace.detach().clone(),
+                "centroid_addresses": [addr_fast, addr_mid, addr_slow]
+            })
 
     def evaluate_gate(self, metrics):
         current_name = self.stage_names[self.current_stage_idx]
@@ -205,7 +206,7 @@ class SAGEContainer(nn.Module):
         stage_boost = 1.0 / (1.0 + self.current_stage_idx * 0.1)
         self.eta = max(0.5, stage_boost * (0.95 ** epoch))
 
-    def save_agnostic_stage(self, stage_name: str, checkpoint_dir: str = "checkpoints"):
+    def save_agnostic_stage(self, stage_name, checkpoint_dir="checkpoints"):
         os.makedirs(checkpoint_dir, exist_ok=True)
         file_path = os.path.join(checkpoint_dir, f"SAGE_STATE_{stage_name}.pth")
         state_to_save = {
@@ -217,7 +218,7 @@ class SAGEContainer(nn.Module):
         torch.save(state_to_save, file_path)
         print(f"[*] Agnostic Stage Weights secured for {stage_name} at {file_path}")
 
-    def load_agnostic_stage(self, stage_name: str, checkpoint_dir: str = "checkpoints"):
+    def load_agnostic_stage(self, stage_name, checkpoint_dir="checkpoints"):
         load_path = os.path.join(checkpoint_dir, f"SAGE_STATE_{stage_name}.pth")
         if not os.path.exists(load_path):
             return False
