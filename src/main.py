@@ -39,7 +39,7 @@ EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 # MODELS & UTILS
 # -------------------------
 
-class SensoryFrontend(nn.Module):
+class Frontend(nn.Module):
     def __init__(self, input_dim, embed_dim=EMBED_DIM):
         super().__init__()
         # Preserving your exact architecture: Linear -> ReLU -> Linear -> LayerNorm
@@ -158,9 +158,9 @@ def main():
     # --- SURGICAL FIX: DYNAMIC INPUT DIMENSION ---
     # Detect if we are feeding 784 pixels (MNIST) or 128 latents (Text)
     input_dim = 784 if args.data == "mnist" else EMBED_DIM
-    print(f"[*] Initializing SensoryFrontend for {args.data.upper()} (Input Dim: {input_dim})")
+    print(f"[*] Initializing Frontend for {args.data.upper()} (Input Dim: {input_dim})")
 
-    frontend = SensoryFrontend(input_dim=input_dim, embed_dim=EMBED_DIM).to(device)
+    frontend = Frontend(input_dim=input_dim, embed_dim=EMBED_DIM).to(device)
 
     # Include the full lifecycle to match STAGE_ORDER
     stage_models = {

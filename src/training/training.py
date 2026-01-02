@@ -228,8 +228,8 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             sage_container.graph.adaptive_prune(
                 nodes_to_consider=active_nodes,
                 tightness=tightness,
-                max_tightness=hparams.get("max_manifold_tightness", 0.0008),
-                prune_fraction=hparams.get("prune_fraction", 0.05)
+                max_tightness=hparams.get("max_manifold_tightness", 0.2),
+                prune_fraction=hparams.get("prune_fraction", 0.3)
             )
 
         avg_loss = loss_total / max(batch_count, 1)

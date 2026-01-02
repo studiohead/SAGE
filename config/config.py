@@ -25,8 +25,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 8,
         "epochs": 5,
         "confidence_threshold": 0.1,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.25,
+        "prune_fraction": 0.15
     },
     "Toddler": {
         "layer_start": 2,
@@ -42,8 +42,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 4,
         "epochs": 5,
         "confidence_threshold": 0.2,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.25,
+        "prune_fraction": 0.15
     },
     "Preschool": {
         "layer_start": 6,
@@ -59,8 +59,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 4,
         "epochs": 5,
         "confidence_threshold": 0.5,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.3,
+        "prune_fraction": 0.2
     },
     "Gradeschool": {
         "layer_start": 12,
@@ -76,8 +76,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 2,
         "epochs": 5,
         "confidence_threshold": 0.7,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.35,
+        "prune_fraction": 0.25
     },
     "Teen": {
         "layer_start": 20,
@@ -94,8 +94,8 @@ STAGE_HYPERPARAMS = {
         "epochs": 5,
         "confidence_threshold": 0.7,
         "growth_confidence_floor": 0.51,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.35,
+        "prune_fraction": 0.3
     },
     "Adult": {
         "layer_start": 20,
@@ -111,8 +111,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 1,
         "epochs": 5,
         "confidence_threshold": 0.7,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.3,
+        "prune_fraction": 0.2
     },
     "Elder": {
         "layer_start": 28,
@@ -128,7 +128,7 @@ STAGE_HYPERPARAMS = {
         "batch_size": 1,
         "epochs": 5,
         "confidence_threshold": 0.7,
-        "max_manifold_tightness": 0.0008,
-        "prune_fraction": 0.05
+        "max_manifold_tightness": 0.25,
+        "prune_fraction": 0.1
     }
 }

@@ -195,7 +195,6 @@ class SharedConceptGraph(nn.Module):
         return context_data
 
     # --- HEBBIAN DYNAMICS ---
-
     def update_stage_aware_hebbian(self, attention_map, batch_indices=None, stage_plasticity=1.0, threshold=None):
         if not self.node_order:
             return 0
@@ -228,7 +227,8 @@ class SharedConceptGraph(nn.Module):
         for i in range(indices.size(0)):
             row, col = indices[i]
             uid_active, uid_target = active_ids[row], self.node_order[col]
-            if uid_active == uid_target: continue
+            if uid_active == uid_target:
+                continue
 
             sim_val = cross_sim[row, col].item()
             node = self.nodes[uid_active]
@@ -240,6 +240,13 @@ class SharedConceptGraph(nn.Module):
                 current_w = node.connections[uid_target]
 
             node.connections[uid_target] = (current_w * 0.99) + (stage_plasticity * sim_val)
+
+        # --- PRUNE ACTIVE NODES IMMEDIATELY ---
+        self.adaptive_prune(
+            tightness=1.0,
+            prune_fraction=0.5,
+            nodes_to_consider=active_ids  # only prune edges for recently updated nodes
+        )
 
         return new_edges_born
 
@@ -280,23 +287,28 @@ class SharedConceptGraph(nn.Module):
                 del node.connections[nbr]
         self.version += 1
 
-    def adaptive_prune(self, tightness, max_tightness=0.5, prune_fraction=0.1):
+    def adaptive_prune(self, tightness, max_tightness=0.5, prune_fraction=0.1, nodes_to_consider=None):
         """
         Remove weakest edges if tightness exceeds max_tightness.
         prune_fraction: fraction of edges to remove.
+        If nodes_to_consider is given, only prune these nodes.
         Memory-efficient: avoids unnecessary copies and sorts only when needed.
         """
         if tightness <= max_tightness:
             return
 
-        for node_id in self.node_order:
-            node = self.nodes[node_id]
+        node_list = nodes_to_consider if nodes_to_consider is not None else self.node_order
+
+        for node_id in node_list:
+            node_key = str(node_id)
+            if node_key not in self.nodes:
+                continue
+
+            node = self.nodes[node_key]
             if not node.connections:
                 continue
 
-            # Only sort the number of edges we might prune to save memory
             num_to_prune = max(1, int(len(node.connections) * prune_fraction))
-            # Get the keys of edges with smallest weights without creating a full list
             smallest_edges = sorted(node.connections.items(), key=lambda x: x[1])[:num_to_prune]
             for nbr, _ in smallest_edges:
                 del node.connections[nbr]

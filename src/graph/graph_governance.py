@@ -27,7 +27,8 @@ class GraphGovernance:
                     'alignment_score': node.alignment_score,
                     'connections': node.connections,
                     'stage_idx': getattr(node, 'stage_idx', -1),
-                    'is_tombstoned': node.is_tombstoned
+                    'is_tombstoned': node.is_tombstoned,
+                    'label': getattr(node, 'label', None)  # <<< FIX: Save label
                 } for node_id, node in graph.nodes.items()
             }
 
@@ -84,8 +85,8 @@ class GraphGovernance:
                 node.alignment_score = data['alignment_score']
                 node.connections = data['connections']
                 node.is_tombstoned = data.get('is_tombstoned', False)
-                if 'stage_idx' in data:
-                    node.stage_idx = data['stage_idx']
+                node.stage_idx = data.get('stage_idx', -1)
+                node.label = data.get('label', None)  # <<< FIX: Restore label
 
             # 2. Restore Order and Anchors (Move anchors to the right hardware)
             graph.node_order = checkpoint.get("node_order", [])
