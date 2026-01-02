@@ -107,3 +107,27 @@ class GraphGovernance:
             import traceback
             traceback.print_exc()
             return False
+
+    def rebrand_node(self, graph, node_id, new_label):
+        """
+        Governance-level rebranding of a node.
+        Enforces the 'Teen Stage' transition into the English Corpus.
+        """
+        node_key = str(node_id)
+        if node_key in graph.nodes:
+            node = graph.nodes[node_key]
+            old_label = getattr(node, 'label', 'None')
+
+            # Apply new label
+            node.label = new_label
+
+            # Every linguistic node is marked for higher-order protection
+            # This prevents the Infant-level pruner from deleting it later.
+            node.is_linguistically_grounded = True
+
+            logger.info(f"[Governance] REBRAND: Node {node_id} ('{old_label}') -> '{new_label}'")
+
+            # Optional: Trigger an immediate secure_save to persist the name
+            self.secure_save(graph, metadata={"event": "rebranding", "node_id": node_id})
+            return True
+        return False

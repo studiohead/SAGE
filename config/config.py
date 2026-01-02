@@ -25,8 +25,8 @@ STAGE_HYPERPARAMS = {
         "batch_size": 8,
         "epochs": 5,
         "confidence_threshold": 0.1,
-        "max_manifold_tightness": 0.25,
-        "prune_fraction": 0.15
+        "max_manifold_tightness": 0.15,
+        "prune_fraction": 0.4
     },
     "Toddler": {
         "layer_start": 2,

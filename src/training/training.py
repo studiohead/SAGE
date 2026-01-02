@@ -77,7 +77,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             from data.imagenet_dataloader import get_sage_imagenet_loader
             loader = get_sage_imagenet_loader(stage_name.lower(), sage_container.graph, train=True, device=device)
         else:
-            # Fallback to standard MNIST if unspecified
             loader = get_sage_mnist_loader(stage_name.lower(), sage_container.graph, train=True, device=device)
 
     print(f"\n=== SAGE SURGICAL TRAINING: {stage_name.upper()} ({device}) ===")
@@ -99,8 +98,9 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         if stage_key != "Infant":
             static_graph = sage_container.graph.get_graph_embedding_matrix()
 
+        active_ids = list(sage_container.graph.node_order)
+
         for batch in loader:
-            # SENSORY ENVELOPE: Minimal assumptions on 'input_ids' structure
             x = batch['input_ids'].to(device, non_blocking=True)
             batch_indices = batch.get('node_indices')
             y = batch['labels'].to(device, non_blocking=True) if 'labels' in batch else None
@@ -113,14 +113,13 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     mem_str = f" | MPS Mem: {mem_used:.1f}MB"
 
                 display_indices = batch_indices[:5] if (
-                            batch_indices is not None and hasattr(batch_indices, '__getitem__')) else "N/A"
+                        batch_indices is not None and hasattr(batch_indices, '__getitem__')) else "N/A"
                 print(f"[PROBE] Batch {batch_count} | Winners: {display_indices}{mem_str}")
 
             c_addresses = batch.get('centroid_addresses')
             if c_addresses is not None:
                 c_addresses = [c.to(device, non_blocking=True) for c in c_addresses]
 
-            # Text-specific dimension alignment (Capability check)
             if hasattr(x, 'shape') and len(x.shape) > 1 and x.shape[1] != EMBED_DIM and args.data == "text":
                 padded = torch.zeros((x.size(0), EMBED_DIM), device=device)
                 padded[:, :min(x.size(1), EMBED_DIM)] = x[:, :min(x.size(1), EMBED_DIM)]
@@ -130,7 +129,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
             optimizer.zero_grad(set_to_none=True)
 
-            # FORWARD: Frontend handles sensory projection, Container handles stage logic
             logits, telemetry = frontend(
                 x,
                 sage_container,
@@ -138,15 +136,17 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 centroid_addresses=c_addresses
             )
 
-            # --- TEEN STAGE: SENSORY-AGNOSTIC NODE GROWTH ---
-            if stage_key == "Teen":
-                teen_hparams = STAGE_HYPERPARAMS["Teen"]
-                growth_hormone = GrowthHormone(
-                    floor=teen_hparams.get("growth_confidence_floor", 0.3),
-                    ceiling=teen_hparams.get("confidence_threshold", 0.7)
-                )
+            # --- MATURATION & EXPANSION: TEEN AND UP ---
+            current_stage_idx = STAGE_ORDER.index(stage_key)
+            teen_stage_idx = STAGE_ORDER.index("Teen")
 
-                # Prioritize available identifiers for node labeling
+            if current_stage_idx >= teen_stage_idx:
+                # EFFICIENT CONFIG LEVERAGE: No hardcoding.
+                gh_floor = hparams.get("growth_confidence_floor", 0.5)
+                gh_ceiling = hparams.get("confidence_threshold", 0.7)
+
+                growth_hormone = GrowthHormone(floor=gh_floor, ceiling=gh_ceiling)
+
                 if 'raw_texts' in batch and len(batch['raw_texts']) > 0:
                     telemetry['text'] = batch['raw_texts'][0]
                 elif y is not None:
@@ -154,18 +154,25 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 else:
                     telemetry['text'] = "unknown_sensory_node"
 
-                new_node_id = growth_hormone.maybe_create_node(
-                    telemetry=telemetry,
-                    graph=sage_container.graph
-                )
+                # PATH A: CREATION
+                new_node_id = growth_hormone.maybe_create_node(telemetry=telemetry, graph=sage_container.graph)
 
                 if new_node_id is not None:
                     active_nodes.append(new_node_id)
+                    active_ids.append(new_node_id)
                     assigned_label = sage_container.graph.nodes[str(new_node_id)].label
-                    print(f"\n>>> [!] GROWTH-HORMONES TRIGGERED (New Node: {new_node_id} | Label: '{assigned_label}')")
+                    print(f"\n>>> [!] {stage_key.upper()} GROWTH: Node {new_node_id} ({assigned_label})")
+
+                # PATH B: MATURATION
+                else:
+                    conf = telemetry.get('confidence', 0.0)
+                    winner_id = telemetry.get('winner_node_id')
+                    if conf >= hparams["confidence_threshold"] and winner_id is not None:
+                        current_node = sage_container.graph.nodes.get(str(winner_id))
+                        if current_node and current_node.label != telemetry['text']:
+                            governor.rebrand_node(sage_container.graph, winner_id, telemetry['text'])
 
             # --- MASKED SUPERVISED LOSS ---
-            # Train the classifier head only if labels fall within the existing output dimensions
             if y is not None and logits is not None:
                 valid_mask = (y < logits.size(-1))
                 if valid_mask.any():
@@ -177,7 +184,6 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     loss_total += loss.item()
 
             # --- UNIVERSAL HEBBIAN GROUNDING ---
-            # Grounding logic: Infant stage is high-plasticity, later stages are confidence-gated
             target_threshold = hparams.get("confidence_threshold", 0.7)
             conf = telemetry.get('confidence', 0.0)
             is_infant = (stage_key == "Infant")
@@ -186,12 +192,13 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
             if should_update and batch_indices is not None:
                 trace = telemetry.get('trace')
-                # Fallback for empty traces during initial seeding/grounding
                 if trace is None or (torch.is_tensor(trace) and trace.sum() == 0):
                     trace = torch.ones((1, len(batch_indices)), device=device)
 
                 print(f" [!] Hebbian Wiring (Conf: {conf:.2f})...", end="", flush=True)
                 sage_container.graph.update_stage_aware_hebbian(
+                    stage_key=stage_key,
+                    tightness=1.0,
                     attention_map=trace,
                     batch_indices=batch_indices,
                     stage_plasticity=hparams["plasticity_scale"],
@@ -206,7 +213,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             if batch_count % 50 == 0 and device.type == "mps":
                 torch.mps.empty_cache()
 
-        # --- ACTIVE NODE PRUNING POST-BATCH ---
+        # --- ACTIVE NODE PRUNING POST-BATCH (PRESERVED LOGIC) ---
         if active_nodes:
             variances = []
             for node_id in active_nodes:
@@ -223,14 +230,17 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     diffs.append(torch.sum((other.embedding - node.embedding.to(other.embedding.device)) ** 2))
                 if diffs:
                     variances.append(torch.mean(torch.stack(diffs)))
-            tightness = torch.mean(torch.stack(variances)).item() if variances else 0.0
 
-            sage_container.graph.adaptive_prune(
-                nodes_to_consider=active_nodes,
-                tightness=tightness,
-                max_tightness=hparams.get("max_manifold_tightness", 0.2),
-                prune_fraction=hparams.get("prune_fraction", 0.3)
-            )
+            # 1. Calculate the actual variance of the graph manifold
+            # current_var = sage_container.graph.compute_manifold_variance()
+
+            # 2. Call pruner leveraging config hyperparameters
+            # sage_container.graph.adaptive_prune(
+            #     tightness=current_var,
+            #     max_tightness=hparams.get("max_manifold_tightness", 0.05),
+            #     prune_fraction=hparams.get("prune_fraction", 0.1),
+            #     nodes_to_consider=active_ids
+            # )
 
         avg_loss = loss_total / max(batch_count, 1)
         avg_gamma = total_gamma / max(batch_count, 1)

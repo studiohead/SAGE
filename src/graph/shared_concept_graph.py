@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config.config import SHARED_MODEL_CONFIG
+from config.config import SHARED_MODEL_CONFIG, STAGE_HYPERPARAMS
 
 EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
@@ -195,7 +195,8 @@ class SharedConceptGraph(nn.Module):
         return context_data
 
     # --- HEBBIAN DYNAMICS ---
-    def update_stage_aware_hebbian(self, attention_map, batch_indices=None, stage_plasticity=1.0, threshold=None):
+    def update_stage_aware_hebbian(self, stage_key, tightness, attention_map, batch_indices=None, stage_plasticity=1.0, threshold=None):
+        hparams = STAGE_HYPERPARAMS[stage_key]
         if not self.node_order:
             return 0
 
@@ -241,11 +242,16 @@ class SharedConceptGraph(nn.Module):
 
             node.connections[uid_target] = (current_w * 0.99) + (stage_plasticity * sim_val)
 
-        # --- PRUNE ACTIVE NODES IMMEDIATELY ---
+        # 2. Call the pruner using the Hyperparams from your config.py
+        # Note: We pass nodes_to_consider=None so it prunes the SEEDED graph,
+        # not just the (currently empty) teen-stage active nodes.
+        # 2. Call pruner (active_ids is now guaranteed to be a list)
+        print("Hebbian update is running adaptive prune...")
         self.adaptive_prune(
-            tightness=1.0,
-            prune_fraction=0.5,
-            nodes_to_consider=active_ids  # only prune edges for recently updated nodes
+            tightness=tightness,
+            max_tightness=hparams.get("max_manifold_tightness", 0.05),
+            prune_fraction=hparams.get("prune_fraction", 0.1),
+            nodes_to_consider=active_ids
         )
 
         return new_edges_born
@@ -287,7 +293,7 @@ class SharedConceptGraph(nn.Module):
                 del node.connections[nbr]
         self.version += 1
 
-    def adaptive_prune(self, tightness, max_tightness=0.5, prune_fraction=0.1, nodes_to_consider=None):
+    def adaptive_prune(self, tightness, max_tightness=0.5, prune_fraction=0.4, nodes_to_consider=None):
         """
         Remove weakest edges if tightness exceeds max_tightness.
         prune_fraction: fraction of edges to remove.
