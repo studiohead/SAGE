@@ -10,7 +10,6 @@ from src.utils.growth_hormone import GrowthHormone
 STAGE_ORDER = ["Infant", "Toddler", "Preschool", "Gradeschool", "Teen", "Adult", "Elder"]
 EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
-
 def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader=None):
     # Detect Hardware: Priority MPS (Mac) > CUDA > CPU
     if torch.backends.mps.is_available():
@@ -141,12 +140,13 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             teen_stage_idx = STAGE_ORDER.index("Teen")
 
             if current_stage_idx >= teen_stage_idx:
-                # EFFICIENT CONFIG LEVERAGE: No hardcoding.
+                # EFFICIENT CONFIG LEVERAGE: Pulling from STAGE_HYPERPARAMS
                 gh_floor = hparams.get("growth_confidence_floor", 0.5)
                 gh_ceiling = hparams.get("confidence_threshold", 0.7)
 
                 growth_hormone = GrowthHormone(floor=gh_floor, ceiling=gh_ceiling)
 
+                # Standardizing Semantic Labeling
                 if 'raw_texts' in batch and len(batch['raw_texts']) > 0:
                     telemetry['text'] = batch['raw_texts'][0]
                 elif y is not None:
@@ -163,7 +163,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     assigned_label = sage_container.graph.nodes[str(new_node_id)].label
                     print(f"\n>>> [!] {stage_key.upper()} GROWTH: Node {new_node_id} ({assigned_label})")
 
-                # PATH B: MATURATION
+                # PATH B: MATURATION (Rebranding)
                 else:
                     conf = telemetry.get('confidence', 0.0)
                     winner_id = telemetry.get('winner_node_id')
@@ -213,7 +213,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             if batch_count % 50 == 0 and device.type == "mps":
                 torch.mps.empty_cache()
 
-        # --- ACTIVE NODE PRUNING POST-BATCH (PRESERVED LOGIC) ---
+        # --- ACTIVE NODE PRUNING POST-BATCH ---
         if active_nodes:
             variances = []
             for node_id in active_nodes:
@@ -231,10 +231,8 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 if diffs:
                     variances.append(torch.mean(torch.stack(diffs)))
 
-            # 1. Calculate the actual variance of the graph manifold
+            # Pruning logic leveraging hparams
             # current_var = sage_container.graph.compute_manifold_variance()
-
-            # 2. Call pruner leveraging config hyperparameters
             # sage_container.graph.adaptive_prune(
             #     tightness=current_var,
             #     max_tightness=hparams.get("max_manifold_tightness", 0.05),

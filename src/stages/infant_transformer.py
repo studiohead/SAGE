@@ -1,10 +1,3 @@
-##############################################################################
-# Infant | y = x + (W * mean(G)) + ε
-# Purpose:
-# Stochastic grounding stage with high plasticity.
-# Optimized: Uses Direct Centroid Anchoring for efficiency.
-##############################################################################
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,51 +23,40 @@ class InfantTransformer(DevelopmentalTransformer):
             ) for _ in range(num_stage_layers)
         ])
 
-        # Grounding Projection (W)
         self.grounding_proj = nn.Linear(embed_dim, embed_dim)
         self.refiner = nn.LayerNorm(embed_dim)
-
         self.epsilon_scale = stage_cfg["epsilon_scale"]
-        self.plasticity_scale = stage_cfg["plasticity_scale"]
+        self.embed_dim = embed_dim
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
-        """
-        x: [seq_len, batch, dim]
-        centroid_addresses: List from Auditor [addr_fast, addr_mid, addr_slow]
-        """
-        gamma_divergence = torch.tensor(0.0, device=x.device)
+        device = x.device
 
-        if graph_matrix is not None:
-            # 1. DIRECT CENTROID ANCHORING
-            # We prioritize the 'Slow-Scale' address (index 2) from the Auditor
-            # as it represents the most stable global mean of the manifold.
+        # 1. ROBUST CENTROID EXTRACTION
+        # Check for empty graph matrix [0, dim]
+        if graph_matrix is not None and graph_matrix.size(0) > 0:
             if centroid_addresses is not None and len(centroid_addresses) > 2:
-                graph_centroid = centroid_addresses[2]
+                graph_centroid = centroid_addresses[2].to(device)
             else:
-                # Optimized Fallback: Single-pass mean is sufficient
-                graph_centroid = graph_matrix.view(-1, self.embed_dim).mean(dim=0)
+                # Force calculation to stay on the hardware device
+                graph_centroid = self.get_mean_field(graph_matrix).to(device)
+        else:
+            # SUTURE: If graph is empty, create a zero-anchor ON THE DEVICE
+            graph_centroid = torch.zeros(self.embed_dim, device=device)
 
-            # 2. STOCHASTIC INJECTION (ε)
-            # We apply epsilon to the projected space to ensure the noise
-            # actually challenges the Transformer's stability.
-            anchored_ground = self.grounding_proj(graph_centroid)
+        # 2. PROJECTION (Now guaranteed to be on the same device)
+        anchored_ground = self.grounding_proj(graph_centroid)
 
-            if self.training:
-                # Epsilon must be scaled by Wi to decay as the stage stabilizes
-                epsilon = torch.randn_like(anchored_ground) * (self.epsilon_scale * Wi)
-                anchored_ground = anchored_ground + epsilon
+        if self.training:
+            epsilon = torch.randn_like(anchored_ground) * (self.epsilon_scale * Wi)
+            anchored_ground = anchored_ground + epsilon
 
-            # 3. GLOBAL INTEGRATION
-            # y = x + (W * mean(G))
-            context_contribution = (Wi * anchored_ground).view(1, 1, -1)
-            x_context = x + context_contribution
+        # 3. GLOBAL INTEGRATION
+        context_contribution = (Wi * anchored_ground).view(1, 1, -1)
+        x_context = x + context_contribution
+        gamma_divergence = F.mse_loss(x_context, x).detach()
 
-            # 4. TELEMETRY
-            # Captured before the norm to measure raw 'Plastic Pressure'
-            gamma_divergence = F.mse_loss(x_context, x).detach()
-            x = self.norm(x_context)
-
-        # 5. TRANSFORMER BACKBONE
+        # 4. BACKBONE
+        x = self.norm(x_context)
         for layer in self.layers:
             x = layer(x)
 

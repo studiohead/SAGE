@@ -1,16 +1,24 @@
 import torch
 
-
 class ManifoldHealthTracker:
     def __init__(self, graph):
         self.graph = graph
 
     def check_health(self, stage_name, epoch):
-        # Extract embeddings for all nodes in the shared concept map
+        # Extract embeddings
         node_matrix = self.graph.get_graph_embedding_matrix().detach()
 
+        # SUTURE: Handle empty graph state to prevent NaN/Crash
+        if node_matrix is None or node_matrix.size(0) == 0:
+            print(f"\n>>> [MANIFOLD HEALTH: {stage_name} | Epoch {epoch}] - EMPTY GRAPH")
+            return
+
         # 1. Geometric Spread (Diversity)
-        variance = torch.var(node_matrix, dim=0).mean().item()
+        # unbiased=False prevents 1/0 errors if there is only 1 node
+        if node_matrix.size(0) > 1:
+            variance = torch.var(node_matrix, dim=0, unbiased=False).mean().item()
+        else:
+            variance = 0.0
 
         # 2. Centroid Stability (Tightness)
         global_centroid = node_matrix.mean(dim=0, keepdim=True)

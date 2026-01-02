@@ -63,8 +63,11 @@ class SharedConceptGraph(nn.Module):
         node_key = str(node_id)
         if node_key not in self.nodes:
             self.nodes[node_key] = ConceptNode(node_id, self.embedding_dim, label=label)
-            self.node_order.append(node_key)
+            if node_key not in self.node_order:
+                self.node_order.append(node_key)
             self.version += 1
+            # Ensure an anchor exists for the new node immediately
+            self.update_local_centroid(node_id)
 
     def get_node_index(self, node_id):
         """Translates Concept ID to position in the vectorized matrix."""
@@ -79,14 +82,17 @@ class SharedConceptGraph(nn.Module):
     def update_local_centroid(self, node_id):
         """EWMA Centroid Anchoring: Z_t+1 = (1 - λ)Z_t + λ(C_v_new)."""
         node_key = str(node_id)
+        if node_key not in self.nodes:
+            return
+
         node = self.nodes[node_key]
-        neighbors = list(node.connections.keys())
+        neighbors = [str(nid) for nid in node.connections.keys() if str(nid) in self.nodes]
         device = self.device
 
         if not neighbors:
             c_v_new = node.embedding.detach().clone().to(device)
         else:
-            neighbor_embs = torch.stack([self.nodes[str(nid)].embedding.detach() for nid in neighbors]).to(device)
+            neighbor_embs = torch.stack([self.nodes[nid].embedding.detach() for nid in neighbors]).to(device)
             c_v_new = neighbor_embs.mean(dim=0)
 
         z_t = self.anchor_tensor.get(node_id, c_v_new).to(device)
@@ -101,22 +107,38 @@ class SharedConceptGraph(nn.Module):
         return torch.norm(z_vec - centroid_address) < radius
 
     def get_graph_embedding_matrix(self):
-        """Vectorized manifold retrieval with Cache-Optimization."""
+        """Vectorized manifold retrieval with Device Enforcement."""
+        # SUTURE: If order and dict drift, force a re-sync
+        if not self.node_order and len(self.nodes) > 0:
+            self.node_order = list(self.nodes.keys())
+
         if not self.node_order:
-            return torch.zeros((1, self.embedding_dim), device=self.device)
+            return torch.zeros((0, self.embedding_dim), device=self.device)
+
+        current_device = self.device
 
         if self._cached_matrix is None or self.version != self._last_version:
-            current_device = self.device
+            # 1. Stack embeddings
             raw_embs = torch.stack([self.nodes[nid].embedding for nid in self.node_order])
-            alignment_scores = torch.tensor([self.nodes[nid].alignment_score for nid in self.node_order], device=current_device).unsqueeze(1)
-            tombstone_mask = torch.tensor([0.0 if self.nodes[nid].is_tombstoned else 1.0 for nid in self.node_order], device=current_device).unsqueeze(1)
 
+            # 2. SUTURE: Force these tensors to be born on the hardware device
+            alignment_scores = torch.tensor(
+                [self.nodes[nid].alignment_score for nid in self.node_order],
+                device=current_device
+            ).unsqueeze(1)
+
+            tombstone_mask = torch.tensor(
+                [0.0 if self.nodes[nid].is_tombstoned else 1.0 for nid in self.node_order],
+                device=current_device
+            ).unsqueeze(1)
+
+            # 3. Cache the product to save compute on next pass
             self._cached_mask = alignment_scores * tombstone_mask
             self._cached_matrix = raw_embs
             self._last_version = self.version
 
         norm_embs = F.normalize(self._cached_matrix, p=2, dim=1)
-        return norm_embs * self._cached_mask
+        return norm_embs * self._cached_mask.to(current_device)
 
     # --- REMEDIATION DYNAMICS ---
 
@@ -165,10 +187,6 @@ class SharedConceptGraph(nn.Module):
     # --- MANIFOLD RETRIEVAL ---
 
     def retrieve_manifold_context(self, current_latent, top_k=5):
-        """
-        MODIFIED: Returns a list of (Tensor, Node_ID) tuples.
-        This allows SAGEInference to retrieve labels in O(1).
-        """
         current_device = current_latent.device
         query_coord = current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent
         query_coord = F.normalize(query_coord, p=2, dim=0)
@@ -187,6 +205,8 @@ class SharedConceptGraph(nn.Module):
         context_data = []
         for cid, sim_score in scored_anchors[:top_k]:
             node_key = str(cid)
+            if node_key not in self.nodes:
+                continue
             node = self.nodes[node_key]
             if sim_score > 0.7 and node.alignment_score > 0.1 and not node.is_tombstoned:
                 normalized_emb = F.normalize(node.embedding, p=2, dim=0).to(current_device)
@@ -195,7 +215,8 @@ class SharedConceptGraph(nn.Module):
         return context_data
 
     # --- HEBBIAN DYNAMICS ---
-    def update_stage_aware_hebbian(self, stage_key, tightness, attention_map, batch_indices=None, stage_plasticity=1.0, threshold=None):
+    def update_stage_aware_hebbian(self, stage_key, tightness, attention_map, batch_indices=None, stage_plasticity=1.0,
+                                   threshold=None):
         hparams = STAGE_HYPERPARAMS[stage_key]
         if not self.node_order:
             return 0
@@ -234,19 +255,12 @@ class SharedConceptGraph(nn.Module):
             sim_val = cross_sim[row, col].item()
             node = self.nodes[uid_active]
 
-            if uid_target not in node.connections:
+            current_w = node.connections.get(uid_target, 0.0)
+            if current_w == 0.0:
                 new_edges_born += 1
-                current_w = 0.0
-            else:
-                current_w = node.connections[uid_target]
 
             node.connections[uid_target] = (current_w * 0.99) + (stage_plasticity * sim_val)
 
-        # 2. Call the pruner using the Hyperparams from your config.py
-        # Note: We pass nodes_to_consider=None so it prunes the SEEDED graph,
-        # not just the (currently empty) teen-stage active nodes.
-        # 2. Call pruner (active_ids is now guaranteed to be a list)
-        print("Hebbian update is running adaptive prune...")
         self.adaptive_prune(
             tightness=tightness,
             max_tightness=hparams.get("max_manifold_tightness", 0.05),
@@ -257,35 +271,39 @@ class SharedConceptGraph(nn.Module):
         return new_edges_born
 
     def ensure_stage_initialized(self, stage_idx):
-        for node_id in self.node_order:
-            node_key = str(node_id)
+        for node_key in self.node_order:
             node = self.nodes[node_key]
             if getattr(node, "stage_idx", -1) >= stage_idx or node.is_tombstoned: continue
             if node.alignment_score >= self.promotion_threshold:
                 node.stage_idx = stage_idx
 
-        if not hasattr(self, "stage_anchors"): self.stage_anchors = {}
-        if stage_idx not in self.stage_anchors:
-            self.stage_anchors[stage_idx] = torch.zeros(self.embedding_dim, device=self.device)
-
     # --- NODE CREATION ---
 
     def create_node_from_trace(self, trace, label=None):
-        new_node_id = max([int(nid) for nid in self.node_order], default=-1) + 1
-        new_node = ConceptNode(new_node_id, embedding_dim=self.embedding_dim, label=label).to(self.device)
+        """Creates a new node, handling mixed numeric/string ID spaces."""
+        # Find highest numeric ID to avoid collisions with BROAD_CONCEPTS labels
+        numeric_ids = [int(nid) for nid in self.node_order if nid.isdigit()]
+        new_node_id = max(numeric_ids, default=-1) + 1
+        node_key = str(new_node_id)
+
+        new_node = ConceptNode(
+            new_node_id,
+            embedding_dim=self.embedding_dim,
+            label=label
+        ).to(self.device)
 
         if isinstance(trace, torch.Tensor):
             with torch.no_grad():
-                new_node.embedding.copy_(trace.view(-1)[:self.embedding_dim].to(self.device))
+                source_vector = trace.view(-1)[:self.embedding_dim].to(self.device)
+                new_node.embedding.copy_(source_vector)
 
-        self.nodes[str(new_node_id)] = new_node
-        self.node_order.append(str(new_node_id))
+        self.nodes[node_key] = new_node
+        self.node_order.append(node_key)
         self.version += 1
         self.update_local_centroid(new_node_id)
         return new_node_id
 
     def apply_edge_threshold(self, min_weight=0.05):
-        """Deactivate edges below the threshold."""
         for node_id in self.node_order:
             node = self.nodes[node_id]
             to_remove = [nbr for nbr, w in node.connections.items() if w < min_weight]
@@ -294,12 +312,6 @@ class SharedConceptGraph(nn.Module):
         self.version += 1
 
     def adaptive_prune(self, tightness, max_tightness=0.5, prune_fraction=0.4, nodes_to_consider=None):
-        """
-        Remove weakest edges if tightness exceeds max_tightness.
-        prune_fraction: fraction of edges to remove.
-        If nodes_to_consider is given, only prune these nodes.
-        Memory-efficient: avoids unnecessary copies and sorts only when needed.
-        """
         if tightness <= max_tightness:
             return
 
@@ -317,35 +329,14 @@ class SharedConceptGraph(nn.Module):
             num_to_prune = max(1, int(len(node.connections) * prune_fraction))
             smallest_edges = sorted(node.connections.items(), key=lambda x: x[1])[:num_to_prune]
             for nbr, _ in smallest_edges:
-                del node.connections[nbr]
+                node.connections.pop(nbr, None)
 
         self.version += 1
 
     def compute_manifold_variance(self, active_nodes=None):
-        """
-        Measures clustering around Z-anchors.
-        If active_nodes is provided, only considers these nodes.
-        Memory-efficient: uses generator expressions, avoids stacking large tensors.
-        """
-
-        def node_pairs_variance(node, others_iter):
-            for other in others_iter:
-                if other.is_tombstoned or other.alignment_score <= 0.0:
-                    continue
-                yield torch.sum((other.embedding - node.embedding.to(other.embedding.device)) ** 2)
-
-        variances = []
-        nodes_to_check = (self.nodes[str(nid)] for nid in active_nodes) if active_nodes else self.nodes.values()
-
-        for node in nodes_to_check:
-            if node.is_tombstoned or node.alignment_score <= 0.0:
-                continue
-            diffs = node_pairs_variance(node, self.nodes.values())
-            try:
-                mean_diff = sum(diffs) / len(list(diffs))
-                variances.append(mean_diff)
-            except ZeroDivisionError:
-                continue
-
-        return sum(variances) / len(variances) if variances else 0.0
-
+        # Optimized to use the existing matrix retrieval
+        node_matrix = self.get_graph_embedding_matrix()
+        if node_matrix.size(0) <= 1:
+            return 0.0
+        # Calculate variance across the manifold
+        return torch.var(node_matrix, dim=0, unbiased=False).mean().item()

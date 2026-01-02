@@ -18,7 +18,7 @@ from src.container.sage_container import SAGEContainer
 from src.monitoring.sage_auditor import SageAuditor
 from src.graph.graph_seeder import SAGEGraphSeeder
 from src.monitoring.analytics_engine import SAGEAnalyticsEngine
-from data.mnist_dataloader import SageMNISTDataset
+from data.mnist_dataloader import SageMNISTDataset, get_sage_mnist_loader
 
 from src.stages.infant_transformer import InfantTransformer
 from src.stages.toddler_transformer import ToddlerTransformer
@@ -29,8 +29,9 @@ from src.stages.adult_transformer import AdultTransformer
 from src.stages.elder_transformer import ElderTransformer
 from src.training.training import run_train_cycle
 
-# Note: Add Adult/Elder imports here if they exist in your stages dir
-
+# -------------------------
+# STAGE & CONFIG CONSTANTS
+# -------------------------
 STAGE_ORDER = ["Infant", "Toddler", "Preschool", "Gradeschool", "Teen", "Adult", "Elder"]
 EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
@@ -40,86 +41,49 @@ EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 # -------------------------
 
 class Frontend(nn.Module):
-    def __init__(self, input_dim, embed_dim=EMBED_DIM):
+    def __init__(self, input_dim, embed_dim=EMBED_DIM, data_mode="mnist"):
         super().__init__()
-        # Preserving your exact architecture: Linear -> ReLU -> Linear -> LayerNorm
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, EMBED_DIM),
-            nn.ReLU(),
-            nn.Linear(EMBED_DIM, embed_dim),
-            nn.LayerNorm(embed_dim)
-        )
-        self.classifier = nn.Linear(embed_dim, 10)
+        self.data_mode = data_mode
+
+        if self.data_mode == "imagenet":
+            from torchvision import models
+            self.backbone = models.resnet18(weights=None)
+            self.backbone.fc = nn.Sequential(
+                nn.Linear(self.backbone.fc.in_features, embed_dim),
+                nn.LayerNorm(embed_dim)
+            )
+        else:
+            self.encoder = nn.Sequential(
+                nn.Linear(input_dim, EMBED_DIM),
+                nn.ReLU(),
+                nn.Linear(EMBED_DIM, embed_dim),
+                nn.LayerNorm(embed_dim)
+            )
+
+        self.classifier = nn.Linear(embed_dim, 1000)
 
     def forward(self, x, sage_container, graph_matrix=None, centroid_addresses=None):
-        # Flatten handles both [B, 1, 28, 28] and [B, Seq, Dim]
-        x_flat = x.view(x.size(0), -1)
-        latent = self.encoder(x_flat)
-        sage_input = latent.unsqueeze(0)
+        if self.data_mode == "imagenet" and x.dim() == 4:
+            latent = self.backbone(x)
+        else:
+            if x.dim() == 4:
+                x = x.mean(dim=(2, 3))
+            elif x.dim() == 3:
+                x = x.mean(dim=1)
+            else:
+                x = x.view(x.size(0), -1)
+            latent = self.encoder(x)
 
-        # YOUR VECTORIZED SPEED HANDLING (Preserved exactly)
-        if graph_matrix is not None:
-            if graph_matrix.dim() == 4:
-                graph_matrix = graph_matrix.squeeze(0)
-            if graph_matrix.dim() == 3 and graph_matrix.size(0) == x_flat.size(0):
-                graph_matrix = graph_matrix.transpose(0, 1)
+        sage_input = latent.unsqueeze(0)  # [1, Batch, Dim]
 
+        # SAGEContainer handles its own device placement for the graph_matrix
         fused_latent, telemetry = sage_container(
             sage_input,
             graph_matrix=graph_matrix,
             centroid_addresses=centroid_addresses
         )
+
         return self.classifier(latent), telemetry
-
-
-def compute_manifold_variance(graph: SharedConceptGraph):
-    """GLOBAL RELATIONAL VARIANCE: Measures clustering around Z-anchors."""
-    variances = []
-    for node_id, centroid in graph.anchor_tensor.items():
-        node_key = str(node_id)
-        if node_key not in graph.nodes:
-            continue
-        node = graph.nodes[node_key]
-        if node.is_tombstoned or node.alignment_score <= 0.0:
-            continue
-        diffs = []
-        for other in graph.nodes.values():
-            if other.is_tombstoned or other.alignment_score <= 0.0:
-                continue
-            diffs.append(torch.sum((other.embedding - centroid.to(other.embedding.device)) ** 2))
-        if diffs:
-            variances.append(torch.mean(torch.stack(diffs)))
-    return torch.mean(torch.stack(variances)).item() if variances else 0.0
-
-# -------------------------
-# DATA & ENTRY
-# -------------------------
-
-def get_sage_mnist_loader(stage_name, graph, train=True, device=None):
-    """
-    Surgically repaired loader using the SageMNISTDataset class to bridge
-    MNIST patterns to seeded BROAD_CONCEPTS.
-    """
-    batch_size = STAGE_HYPERPARAMS.get(stage_name.capitalize(), {}).get('batch_size', 4)
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-
-    mnist_data = datasets.MNIST(root="data", train=train, download=True, transform=transform)
-
-    # --- FIX: Bridging to the seeded strings '0'-'9' ---
-    sage_dataset = SageMNISTDataset(mnist_data, graph)
-
-    # Speed: Enable pin_memory only for non-CPU devices
-    use_pin = device is not None and device.type != "cpu"
-
-    return DataLoader(
-        sage_dataset,
-        batch_size=batch_size,
-        shuffle=train,
-        pin_memory=use_pin
-    )
 
 
 def main():
@@ -129,8 +93,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--load", type=str)
     parser.add_argument("--up_to_stage", default=None)
-    parser.add_argument("--data", choices=["mnist", "text"], default="mnist")
-    parser.add_argument("--text_path", type=str, default="training_data/lit1.txt")
+    parser.add_argument("--data", choices=["mnist", "text", "imagenet"], default="mnist")
+    parser.add_argument("--text_path", type=str, default="training_data/primitives.txt")
     parser.add_argument("--audit_level",
                         choices=["SAGE_DELEGATED", "FORCED_INCINERATE", "FORCED_TOMBSTONE", "DISABLED"],
                         default="SAGE_DELEGATED")
@@ -140,14 +104,36 @@ def main():
     analytics = SAGEAnalyticsEngine()
     governor = GraphGovernance("checkpoints/global_manifold.pth")
 
-    # Auto-detect device for main initialization
     device = torch.device(
         "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
 
+    # 1. GRAPH INITIALIZATION
     graph = SharedConceptGraph(embedding_dim=EMBED_DIM).to(device)
     manifold_loaded = governor.secure_load(graph)
 
-    # --- AUTO-DISCOVERY LOGIC ---
+    # 2. SEEDING (Only if fresh start or empty manifold)
+    if not manifold_loaded or len(graph.nodes) == 0:
+        print("[!] Empty Manifold detected. Initializing First Birth (Seeding)...")
+
+        # Temporary frontend for seeder context
+        temp_frontend = Frontend(input_dim=EMBED_DIM, embed_dim=EMBED_DIM, data_mode="text").to(device)
+        seeder = SAGEGraphSeeder(graph, temp_frontend)
+
+        with torch.no_grad():
+            # Identity-based basis for the "Respected Ten" (0-9)
+            basis = torch.eye(10, EMBED_DIM).to(device)
+            basis += torch.randn_like(basis) * 0.01
+            mnist_seeds = {str(i): basis[i].unsqueeze(0) for i in range(10)}
+
+        # Seed 8,000+ concepts (BROAD_CONCEPTS)
+        seeder.seed_all(data.seeder_concepts.BROAD_CONCEPTS, mnist_seeds)
+
+        # Final migration sync
+        graph.to(device)
+        governor.secure_save(graph)
+        print(f"[*] Manifold Seeded: {len(graph.nodes)} nodes initialized on {device}.")
+
+    # 3. AUTO-RESUME CHECKPOINT DETECTION
     if not args.load:
         for stage in reversed(STAGE_ORDER):
             if os.path.exists(f"checkpoints/SAGE_STATE_{stage.capitalize()}.pth"):
@@ -155,14 +141,12 @@ def main():
                 print(f"[*] AUTO-RESUME: Detected existing state '{stage}'. Loading...")
                 break
 
-    # --- SURGICAL FIX: DYNAMIC INPUT DIMENSION ---
-    # Detect if we are feeding 784 pixels (MNIST) or 128 latents (Text)
-    input_dim = 784 if args.data == "mnist" else EMBED_DIM
+    # 4. CONTAINER & FRONTEND SETUP
+    input_dim = 784 if args.data == "mnist" else (3 if args.data == "imagenet" else EMBED_DIM)
     print(f"[*] Initializing Frontend for {args.data.upper()} (Input Dim: {input_dim})")
 
-    frontend = Frontend(input_dim=input_dim, embed_dim=EMBED_DIM).to(device)
+    frontend = Frontend(input_dim=input_dim, embed_dim=EMBED_DIM, data_mode=args.data).to(device)
 
-    # Include the full lifecycle to match STAGE_ORDER
     stage_models = {
         "Infant": InfantTransformer(),
         "Toddler": ToddlerTransformer(),
@@ -177,74 +161,56 @@ def main():
     sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor).to(
         device)
 
+    # 5. LOAD WEIGHTS
     if args.load:
+        # Note: Container now has internal load_agnostic_stage, but for main.py
+        # we check the full state_dict for frontend persistence.
         path = f"checkpoints/SAGE_STATE_{args.load.capitalize()}.pth"
         if os.path.exists(path):
             ckpt = torch.load(path, map_location=device)
-
-            # --- SURGICAL FIX: SHAPE-AWARE FRONTEND LOAD ---
-            try:
-                if 'frontend_state' in ckpt:
-                    frontend.load_state_dict(ckpt['frontend_state'])
-            except RuntimeError:
-                print("[!] Frontend shape mismatch detected. Re-initializing weights for data pivot.")
-
-            sage_container.load_state_dict(ckpt.get('sage_state', ckpt), strict=False)
+            # Load Frontend
+            if isinstance(ckpt, dict) and 'frontend_state' in ckpt:
+                frontend.load_state_dict(ckpt['frontend_state'])
+            # Load SAGE weights via Container helper
+            sage_container.load_agnostic_stage(args.load.capitalize())
         else:
             print(f"FAILED: Checkpoint {path} not found.")
             sys.exit(1)
 
-    # --- CONDITIONAL SEEDING ---
-    if not manifold_loaded or len(graph.nodes) == 0:
-        print("[!] Empty Manifold detected. Initializing First Birth (Seeding)...")
-        seeder = SAGEGraphSeeder(graph, frontend)
-        # Match BROAD_CONCEPTS strings "0"-"9"
-        mnist_seeds = {str(i): torch.rand(1, EMBED_DIM).to(device) for i in range(10)}
-        seeder.seed_all(
-            data.seeder_concepts.BROAD_CONCEPTS,
-            mnist_seeds
-        )
-        governor.secure_save(graph)
-
+    # 6. EXECUTION MODES
     if args.mode == "train":
+        # Determine training range
         start_idx = STAGE_ORDER.index(args.load.capitalize()) if args.load else 0
-        end_idx = STAGE_ORDER.index(args.up_to_stage.capitalize()) + 1 if args.up_to_stage else (
-                STAGE_ORDER.index(args.stage.capitalize()) + 1)
+        target_stage = args.up_to_stage.capitalize() if args.up_to_stage else args.stage.capitalize()
+        end_idx = STAGE_ORDER.index(target_stage) + 1
 
         for stage_name in STAGE_ORDER[start_idx:end_idx]:
             loader = None
             if args.data == "text":
                 from data.text_dataloader import get_sage_text_loader
                 loader = get_sage_text_loader(args.text_path, graph, stage_name)
+            elif args.data == "mnist":
+                loader = get_sage_mnist_loader(stage_name, graph, train=True, device=device)
+            elif args.data == "imagenet":
+                from data.imagenet_dataloader import get_sage_imagenet_loader
+                loader = get_sage_imagenet_loader(stage_name, graph, train=True, device=device)
 
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
-        print(f"[MANIFOLD] Conceptual Variance: {compute_manifold_variance(graph):.6f}")
+        variance = graph.compute_manifold_variance()
+        print(f"[MANIFOLD] Nodes: {len(graph.nodes)} | Conceptual Variance: {variance:.6f}")
 
-    # Inside main(), after your existing mode handling
     elif args.mode == "inference":
-        print("[*] Entering SAGE Inference Mode. Type 'exit' to quit.")
-
-        # Initialize tokenizer and inference
         tokenizer = GraphTokenizer(graph=graph)
         sage_infer = SAGEInference(graph=graph, tokenizer=tokenizer)
-
         print("[*] Entering SAGE Inference Mode. Type 'exit' to quit.")
         while True:
             prompt = input(">>> ")
-            if prompt.lower() in {"exit", "quit"}:
-                break
+            if prompt.lower() in {"exit", "quit"}: break
             response = sage_infer.respond(prompt, top_k=5)
-            print(response)
+            print(f"SAGE: {response}")
             print("-" * 40)
-
-        while True:
-            prompt = input(">>> ")
-            if prompt.lower() in {"exit", "quit"}:
-                break
-            response = sage_infer.respond(prompt)
-            print(response)
 
     auditor.shutdown()
 
