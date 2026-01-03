@@ -1,3 +1,10 @@
+##############################################################################
+# Infant | y = x + (W * mean(G)) + ε
+# Purpose:
+# Stochastic grounding stage with high plasticity.
+# Optimized: Uses Direct Centroid Anchoring for efficiency.
+##############################################################################
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

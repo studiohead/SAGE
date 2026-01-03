@@ -75,9 +75,9 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
         "batch_size": 2,
         "epochs": 5,
-        "confidence_threshold": 0.7,
+        "confidence_threshold": 0.85,
         "max_manifold_tightness": 0.35,
-        "prune_fraction": 0.25
+        "prune_fraction": 0.75
     },
     "Teen": {
         "layer_start": 20,
@@ -92,10 +92,10 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 150},
         "batch_size": 2,
         "epochs": 5,
-        "confidence_threshold": 0.7,
+        "confidence_threshold": 0.88,
         "growth_confidence_floor": 0.51,
         "max_manifold_tightness": 0.35,
-        "prune_fraction": 0.3
+        "prune_fraction": 0.65
     },
     "Adult": {
         "layer_start": 20,
@@ -110,9 +110,10 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
         "batch_size": 1,
         "epochs": 5,
-        "confidence_threshold": 0.7,
+        "confidence_threshold": 0.92,
+        "growth_confidence_floor": 0.51,
         "max_manifold_tightness": 0.3,
-        "prune_fraction": 0.2
+        "prune_fraction": 0.50
     },
     "Elder": {
         "layer_start": 28,
@@ -127,8 +128,9 @@ STAGE_HYPERPARAMS = {
         "scheduler": {"type": "linear_warmup", "warmup_steps": 50},
         "batch_size": 1,
         "epochs": 5,
-        "confidence_threshold": 0.7,
+        "confidence_threshold": 0.95,
+        "growth_confidence_floor": 0.51,
         "max_manifold_tightness": 0.25,
-        "prune_fraction": 0.1
+        "prune_fraction": 0.40
     }
 }
