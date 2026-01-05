@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import argparse
 import numpy as np
@@ -60,9 +61,14 @@ class Frontend(nn.Module):
                 nn.LayerNorm(embed_dim)
             )
 
+        # The classifier MUST act on the output of the SAGE Container
         self.classifier = nn.Linear(embed_dim, 1000)
 
     def forward(self, x, sage_container, graph_matrix=None, centroid_addresses=None):
+        """
+        Surgically Repaired Forward Pass:
+        Ensures the final logits are a direct descendant of the graph_matrix.
+        """
         if self.data_mode == "imagenet" and x.dim() == 4:
             latent = self.backbone(x)
         else:
@@ -74,16 +80,23 @@ class Frontend(nn.Module):
                 x = x.view(x.size(0), -1)
             latent = self.encoder(x)
 
-        sage_input = latent.unsqueeze(0)  # [1, Batch, Dim]
+        # sage_input requirement: [Seq, Batch, Dim]
+        sage_input = latent.unsqueeze(0)
 
-        # SAGEContainer handles its own device placement for the graph_matrix
-        fused_latent, telemetry = sage_container(
+        # This is where the graph_matrix is fused with the input latent.
+        fused_output, telemetry = sage_container(
             sage_input,
             graph_matrix=graph_matrix,
             centroid_addresses=centroid_addresses
         )
 
-        return self.classifier(latent), telemetry
+        # Squeezing the sequence dimension [1, B, D] -> [B, D]
+        if fused_output.dim() == 3:
+            fused_output = fused_output.squeeze(0)
+
+        # REPAIR: We pass the FUSED_OUTPUT to the classifier.
+        # This creates the backpropagation path to the master_embeddings.
+        return self.classifier(fused_output), telemetry
 
 
 def main():
@@ -125,7 +138,7 @@ def main():
             basis += torch.randn_like(basis) * 0.01
             mnist_seeds = {str(i): basis[i].unsqueeze(0) for i in range(10)}
 
-        # Seed 8,000+ concepts (BROAD_CONCEPTS)
+        # Seed concepts (BROAD_CONCEPTS)
         seeder.seed_all(data.seeder_concepts.BROAD_CONCEPTS, mnist_seeds)
 
         # Final migration sync
@@ -158,20 +171,15 @@ def main():
     }
 
     auditor = SageAuditor(graph, mode=args.audit_level)
-    sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor).to(
-        device)
+    sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor).to(device)
 
     # 5. LOAD WEIGHTS
     if args.load:
-        # Note: Container now has internal load_agnostic_stage, but for main.py
-        # we check the full state_dict for frontend persistence.
         path = f"checkpoints/SAGE_STATE_{args.load.capitalize()}.pth"
         if os.path.exists(path):
             ckpt = torch.load(path, map_location=device)
-            # Load Frontend
             if isinstance(ckpt, dict) and 'frontend_state' in ckpt:
                 frontend.load_state_dict(ckpt['frontend_state'])
-            # Load SAGE weights via Container helper
             sage_container.load_agnostic_stage(args.load.capitalize())
         else:
             print(f"FAILED: Checkpoint {path} not found.")
@@ -179,7 +187,6 @@ def main():
 
     # 6. EXECUTION MODES
     if args.mode == "train":
-        # Determine training range
         start_idx = STAGE_ORDER.index(args.load.capitalize()) if args.load else 0
         target_stage = args.up_to_stage.capitalize() if args.up_to_stage else args.stage.capitalize()
         end_idx = STAGE_ORDER.index(target_stage) + 1
@@ -195,11 +202,18 @@ def main():
                 from data.imagenet_dataloader import get_sage_imagenet_loader
                 loader = get_sage_imagenet_loader(stage_name, graph, train=True, device=device)
 
+            # --- SAGE GRADIENT SUTURE VERIFICATION ---
+            # Ensure the graph parameters are explicitly trainable before handing over to the loop
+            for param in graph.parameters():
+                param.requires_grad = True
+
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
+        # Force a training-mode pass to see the live differentiable variance
+        graph.train()
         variance = graph.compute_manifold_variance()
-        print(f"[MANIFOLD] Nodes: {len(graph.nodes)} | Conceptual Variance: {variance:.6f}")
+        print(f"[MANIFOLD] Nodes: {len(graph.nodes)} | Conceptual Variance: {variance.item():.6f}")
 
     elif args.mode == "inference":
         tokenizer = GraphTokenizer(graph=graph)

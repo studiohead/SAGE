@@ -11,6 +11,7 @@ class GraphGovernance:
     """
     Manages the persistence and integrity of the SharedConceptGraph.
     Uses atomic 'Save-and-Swap' and ensures MPS/CPU device compatibility.
+    Surgically updated for Contiguous Parameter Blocks.
     """
 
     def __init__(self, graph_path: str = "checkpoints/global_manifold.pth"):
@@ -19,24 +20,31 @@ class GraphGovernance:
 
     def secure_save(self, graph: torch.nn.Module, metadata: Optional[dict] = None):
         try:
-            # 1. Capture the structural data
-            # .cpu() is vital here so the file isn't hardware-locked to MPS
-            nodes_data = {
-                node_id: {
-                    'embedding': node.embedding.data.cpu(),
-                    'alignment_score': node.alignment_score,
+            # 1. Capture the structural data from Contiguous Master Tensors
+            # We map node_id to its index in the master tensors via node_order
+            nodes_data = {}
+            for idx, node_id in enumerate(graph.node_order):
+                node_key = str(node_id)
+                node = graph.nodes[node_key]
+
+                # Fetching from Master Blocks (The Breakout Fix)
+                # We move to .cpu() here to prevent hardware-locking the checkpoint
+                nodes_data[node_id] = {
+                    'embedding': graph.master_embeddings[idx].data.cpu(),
+                    'alignment_score': graph.master_alignments[idx].data.cpu(),
                     'connections': node.connections,
                     'stage_idx': getattr(node, 'stage_idx', -1),
                     'is_tombstoned': node.is_tombstoned,
-                    'label': getattr(node, 'label', None)  # <<< FIX: Save label
-                } for node_id, node in graph.nodes.items()
-            }
+                    'label': getattr(node, 'label', None),
+                    # Preserve mask state
+                    'tombstone_mask': graph.tombstone_mask[idx].cpu()
+                }
 
             # Integrity Guard: Check for NaN before overwriting good data
-            for node_id, data in nodes_data.items():
-                if torch.isnan(data['embedding']).any():
-                    logger.error(f"[Governance] FATAL: Node {node_id} contains NaN. Save aborted.")
-                    return False
+            # Check the Master Tensors directly for global health
+            if torch.isnan(graph.master_embeddings).any():
+                logger.error("[Governance] FATAL: Master Embeddings contain NaN. Save aborted.")
+                return False
 
             temp_path = f"{self.graph_path}.tmp"
 
@@ -44,7 +52,6 @@ class GraphGovernance:
                 "graph_state": graph.state_dict(),
                 "nodes_data": nodes_data,
                 "node_order": getattr(graph, "node_order", []),
-                # Anchors are moved to CPU for storage
                 "anchor_tensor": {k: v.cpu() for k, v in getattr(graph, "anchor_tensor", {}).items()},
                 "metadata": metadata or {}
             }
@@ -57,47 +64,49 @@ class GraphGovernance:
             return True
         except Exception as e:
             logger.error(f"[Governance] Critical Save Failure: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def secure_load(self, graph: torch.nn.Module):
         if not os.path.exists(self.graph_path):
             return False
         try:
-            # Detect target device (MPS for your Mac)
             device = next(graph.parameters()).device if list(graph.parameters()) else torch.device("cpu")
-            checkpoint = torch.load(self.graph_path, map_location="cpu")  # Load to RAM first
+            checkpoint = torch.load(self.graph_path, map_location="cpu")
 
-            # 1. RECONSTRUCT using add_node to ensure ModuleDict registration
             nodes_data = checkpoint.get("nodes_data", {})
 
             # Clear existing to prevent duplicates
             graph.nodes.clear()
             graph.node_order = []
 
+            # 1. RECONSTRUCT: add_node registers the ID and activates the Master Block slot
             for node_id, data in nodes_data.items():
-                # add_node registers the ConceptNode in the ModuleDict correctly
                 graph.add_node(node_id)
                 node_key = str(node_id)
                 node = graph.nodes[node_key]
+                idx = graph.node_order.index(node_key)
 
-                # Copy data and move to device
-                node.embedding.data.copy_(data['embedding'].to(device))
-                node.alignment_score = data['alignment_score']
+                # Restore into Master Tensors
+                with torch.no_grad():
+                    graph.master_embeddings[idx].copy_(data['embedding'].to(device))
+                    graph.master_alignments[idx].copy_(data['alignment_score'].to(device))
+                    graph.tombstone_mask[idx].copy_(data.get('tombstone_mask', torch.ones(1)).to(device))
+
+                # Restore Metadata to the Node Object
                 node.connections = data['connections']
                 node.is_tombstoned = data.get('is_tombstoned', False)
                 node.stage_idx = data.get('stage_idx', -1)
-                node.label = data.get('label', None)  # <<< FIX: Restore label
+                node.label = data.get('label', None)
 
-            # 2. Restore Order and Anchors (Move anchors to the right hardware)
             graph.node_order = checkpoint.get("node_order", [])
             graph.anchor_tensor = {
                 k: v.to(device) for k, v in checkpoint.get("anchor_tensor", {}).items()
             }
 
-            # 3. Final State Dict check
+            # 3. Final State Dict check (captures buffers and versioning)
             graph.load_state_dict(checkpoint.get("graph_state", {}), strict=False)
-
-            # Move entire graph structure to the target device
             graph.to(device)
 
             logger.info(f"[Governance] Manifold RESTORED: {len(graph.nodes)} nodes active on {device}.")
@@ -109,25 +118,13 @@ class GraphGovernance:
             return False
 
     def rebrand_node(self, graph, node_id, new_label):
-        """
-        Governance-level rebranding of a node.
-        Enforces the 'Teen Stage' transition into the English Corpus.
-        """
         node_key = str(node_id)
         if node_key in graph.nodes:
             node = graph.nodes[node_key]
             old_label = getattr(node, 'label', 'None')
-
-            # Apply new label
             node.label = new_label
-
-            # Every linguistic node is marked for higher-order protection
-            # This prevents the Infant-level pruner from deleting it later.
             node.is_linguistically_grounded = True
-
             logger.info(f"[Governance] REBRAND: Node {node_id} ('{old_label}') -> '{new_label}'")
-
-            # Optional: Trigger an immediate secure_save to persist the name
             self.secure_save(graph, metadata={"event": "rebranding", "node_id": node_id})
             return True
         return False

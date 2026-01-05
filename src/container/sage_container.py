@@ -21,6 +21,7 @@ class StageFusion(nn.Module):
 
     def forward(self, x_input, stage_outputs):
         # Reduction to single vector
+        # x_input shape: [seq, batch, dim]
         current_centroid = x_input.mean(dim=0).mean(dim=0)
         raw_weights = self.centroid_comparator(current_centroid)
 
@@ -61,7 +62,6 @@ class SAGEContainer(nn.Module):
         self.eta = 1.0
 
         # Hardware Source of Truth
-        # SUTURE: We don't store a static .device, we use a buffer to track it via PyTorch's native state
         self.register_buffer("_hw_fix", torch.zeros(1))
 
         sample_transformer = next(iter(stage_models.values()))
@@ -78,15 +78,7 @@ class SAGEContainer(nn.Module):
         x = x.to(dev)
         stage_outputs = []
 
-        final_telemetry = {
-            "confidence": 1.0,
-            "gamma_divergence": torch.tensor(0.0, device=dev),
-            "category": "NULL",
-            "trace": None
-        }
-
         # SUTURE: Always fetch the graph matrix fresh from the graph.
-        # The Graph now handles its own internal device-aware caching.
         if graph_matrix is None:
             graph_matrix = self.graph.get_graph_embedding_matrix().to(dev)
 
@@ -94,19 +86,28 @@ class SAGEContainer(nn.Module):
             centroid_addresses = [addr.to(dev) for addr in centroid_addresses]
 
         seq_len_orig = x.size(0)
+        batch_size = x.size(1)
+
+        final_telemetry = {
+            "confidence": 1.0,
+            "gamma_divergence": torch.tensor(0.0, device=dev),
+            "category": "NULL",
+            "trace": None,
+            "winner_node_ids": None  # CRITICAL: For Hebbian distribution
+        }
 
         for i, name in enumerate(self.stage_names):
             if i > self.current_stage_idx:
                 break
 
-            model = self.stages[name].to(dev)  # Inline safety for active stage
+            model = self.stages[name].to(dev)
 
             x_aug = x
-            if i >= 4:  # Teen+ Manifold Retrieval (Memory retrieval logic)
+            if i >= 4:  # Teen+ Manifold Retrieval
                 memory_block = self.graph.retrieve_manifold_context(x.mean(0))
                 if memory_block:
                     context_tensors = torch.stack([item[0].to(dev) for item in memory_block])
-                    mem_expanded = context_tensors.unsqueeze(1).expand(-1, x.size(1), -1)
+                    mem_expanded = context_tensors.unsqueeze(1).expand(-1, batch_size, -1)
                     x_aug = torch.cat([x, mem_expanded], dim=0)
 
             out, impact = model(
@@ -127,12 +128,29 @@ class SAGEContainer(nn.Module):
                 impact_val = torch.tensor(1.0, device=dev)
                 out = torch.nan_to_num(out, nan=0.0)
 
-            # Output alignment (Slicing to seq_len)
+            # Output alignment
             if out.size(0) != seq_len_orig:
                 out = out[:seq_len_orig]
             stage_outputs.append(out)
 
             if i == self.current_stage_idx:
+                # SUTURE: BREAKING THE NODE 0 COLLAPSE
+                # We project the output trace against the manifold to find topological winners.
+                with torch.no_grad():
+                    # Projection: [Batch, Dim]
+                    projection = out.mean(0)
+                    # Similarity to every node in the graph: [Batch, NumNodes]
+                    # graph_matrix is normalized by the graph, so this is Cosine Similarity
+                    logits = torch.matmul(projection, graph_matrix.t())
+
+                    # Apply Temperature scaling based on stage (Infant needs high entropy)
+                    temp = 2.0 if self.current_stage_idx == 0 else 1.0
+                    probs = torch.softmax(logits / temp, dim=-1)
+
+                    # Sample winners to ensure we don't just hit the top-1 (identity trap)
+                    winner_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                    final_telemetry["winner_node_ids"] = winner_indices.tolist()
+
                 final_telemetry.update({
                     "confidence": torch.exp(-impact_val).item(),
                     "gamma_divergence": impact_val,
