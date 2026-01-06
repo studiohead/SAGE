@@ -58,7 +58,8 @@ class InfantTransformer(DevelopmentalTransformer):
             anchored_ground = anchored_ground + epsilon
 
         # 3. GLOBAL INTEGRATION
-        context_contribution = (Wi * anchored_ground).view(1, 1, -1)
+        #context_contribution = (Wi * anchored_ground).view(1, 1, -1)
+        context_contribution = Wi * self.grounding_proj(x - graph_centroid)
         x_context = x + context_contribution
         gamma_divergence = F.mse_loss(x_context, x).detach()
 

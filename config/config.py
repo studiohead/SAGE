@@ -14,41 +14,39 @@ STAGE_HYPERPARAMS = {
         "layer_start": 0,
         "layer_end": 4,
         "training_layers": 4,
-        "epsilon_scale": 0.15,
-        "learning_rate": 1e-3,  # INCREASED: Higher baseline for Infant
-        "weight_decay": 1e-5,
+        "epsilon_scale": 0.05,
+        "learning_rate": 1e-3,
+        "weight_decay": 1e-4,  # Passive Centripetal pull
         "dropout": 0.1,
-        "gradient_clip": 1.0,
+        "gradient_clip": 0.8,
         "plasticity_scale": 0.5,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 800},
-        "batch_size": 16,
+        "batch_size": 128,
         "epochs": 5,
         "confidence_threshold": 0.45,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.5,  # NAPALM: Forced repulsion to break 0.9983
+        "pressure_weight": 0.5,
         "max_manifold_tightness": 0.20,
-        "prune_fraction": 0.6
+        "prune_fraction": 0.4,
+        "drift_penalty": 0.1     # ACTIVE: Anti-3.3377 shield
     },
     "Toddler": {
         "layer_start": 2,
         "layer_end": 8,
         "training_layers": 6,
-        "epsilon_scale": 0.08,
+        "epsilon_scale": 0.08,    # Peak curiosity/exploration
         "learning_rate": 8e-4,
         "weight_decay": 1e-5,
         "dropout": 0.1,
         "gradient_clip": 1.0,
         "plasticity_scale": 0.4,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 600},
-        "batch_size": 4,
+        "batch_size": 16,
         "epochs": 5,
         "confidence_threshold": 0.6,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.5,  # Moderate repulsion
-        "max_manifold_tightness": 0.25,
-        "prune_fraction": 0.45
+        "pressure_weight": 0.5,
+        "max_manifold_tightness": 0.25, # Space expands for relational depth
+        "prune_fraction": 0.5,
+        "drift_penalty": 0.05
     },
     "Preschool": {
         "layer_start": 6,
@@ -61,14 +59,12 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 1.0,
         "plasticity_scale": 0.3,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 400},
-        "batch_size": 4,
+        "batch_size": 16,
         "epochs": 5,
         "confidence_threshold": 0.7,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.4,
-        "max_manifold_tightness": 0.3,
-        "prune_fraction": 0.35
+        "pressure_weight": 0.4,   # Focus starts shifting to Saliency
+        "max_manifold_tightness": 0.25,
+        "prune_fraction": 0.4
     },
     "Gradeschool": {
         "layer_start": 12,
@@ -81,13 +77,11 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 1.0,
         "plasticity_scale": 0.25,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
-        "batch_size": 2,
+        "batch_size": 8,
         "epochs": 5,
         "confidence_threshold": 0.82,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.3,  # Stability takes over
-        "max_manifold_tightness": 0.35,
+        "pressure_weight": 0.3,   # Categorical logic requires stability
+        "max_manifold_tightness": 0.30,
         "prune_fraction": 0.3
     },
     "Teen": {
@@ -104,9 +98,7 @@ STAGE_HYPERPARAMS = {
         "batch_size": 2,
         "epochs": 5,
         "confidence_threshold": 0.88,
-        "growth_confidence_floor": 0.51,
-
-        # --- THE PRESSURE ENGINE ---
+        "growth_confidence_floor": 0.51, # Logic for [2026-01-02] node creation
         "pressure_weight": 0.2,
         "max_manifold_tightness": 0.35,
         "prune_fraction": 0.4
@@ -126,17 +118,15 @@ STAGE_HYPERPARAMS = {
         "epochs": 5,
         "confidence_threshold": 0.92,
         "growth_confidence_floor": 0.6,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.2,
-        "max_manifold_tightness": 0.3,
-        "prune_fraction": 0.50
+        "pressure_weight": 0.1,   # Fine-tuning mode
+        "max_manifold_tightness": 0.30,
+        "prune_fraction": 0.5
     },
     "Elder": {
         "layer_start": 28,
         "layer_end": 40,
         "training_layers": 12,
-        "epsilon_scale": 0.0,
+        "epsilon_scale": 0.0,     # Crystallized Intelligence
         "learning_rate": 5e-5,
         "weight_decay": 0,
         "dropout": 0.25,
@@ -147,9 +137,7 @@ STAGE_HYPERPARAMS = {
         "epochs": 5,
         "confidence_threshold": 0.95,
         "growth_confidence_floor": 0.7,
-
-        # --- THE PRESSURE ENGINE ---
-        "pressure_weight": 0.1,
+        "pressure_weight": 0.05,  # Minimal repulsion
         "max_manifold_tightness": 0.25,
         "prune_fraction": 0.40
     }

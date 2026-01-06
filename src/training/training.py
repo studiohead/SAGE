@@ -85,7 +85,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         },
         {
             'params': [p for p in sage_container.graph.parameters() if p.requires_grad],
-            'lr': hparams["learning_rate"] * 10
+            'lr': hparams["learning_rate"] * 1
         }
     ], weight_decay=hparams.get("weight_decay", 0.01))
 
@@ -257,7 +257,8 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     )
 
             batch_count += 1
-
+        # Alpha 0.2 means we move nodes 20% closer to the origin in one shot
+        sage_container.graph.apply_origin_attractor(alpha=0.2, target_drift=0.5)
         print(f"[*] Epoch {epoch} complete. Initiating Synaptic Sleep Cycle...")
         sage_container.graph.apply_edge_threshold(min_weight=0.08)
 

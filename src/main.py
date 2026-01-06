@@ -172,6 +172,7 @@ def main():
 
     auditor = SageAuditor(graph, mode=args.audit_level)
     sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor).to(device)
+    tokenizer = GraphTokenizer(graph=graph)
 
     # 5. LOAD WEIGHTS
     if args.load:
@@ -197,7 +198,8 @@ def main():
                 from data.text_dataloader import get_sage_text_loader
                 loader = get_sage_text_loader(args.text_path, graph, stage_name)
             elif args.data == "mnist":
-                loader = get_sage_mnist_loader(stage_name, graph, train=True, device=device)
+                # SUTURE: Added 'tokenizer' to the arguments
+                loader = get_sage_mnist_loader(stage_name, graph, tokenizer, train=True, device=device)
             elif args.data == "imagenet":
                 from data.imagenet_dataloader import get_sage_imagenet_loader
                 loader = get_sage_imagenet_loader(stage_name, graph, train=True, device=device)

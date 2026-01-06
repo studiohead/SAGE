@@ -278,15 +278,39 @@ class SharedConceptGraph(nn.Module):
         self.version += 1
 
     def adaptive_prune(self, tightness, max_tightness=0.15, prune_fraction=0.4, nodes_to_consider=None):
-        """Reduces edge density when structural tightness exceeds limits."""
-        if tightness <= max_tightness: return
+        """
+        Reduces edge density when structural tightness exceeds limits.
+        SUTURE: Fixed ModuleDict .get() crash and added Tombstone protection for 0-9.
+        """
+        if tightness <= max_tightness:
+            return
+
+        # Use membership check instead of .get() for ModuleDict compatibility
         keys = [str(n) for n in nodes_to_consider] if nodes_to_consider else self.node_order
+
+        # Foundational Concepts to protect (Tombstoned)
+        protected_labels = {str(i) for i in range(10)}
+
         for k in keys:
-            node = self.nodes.get(k)
-            if node and node.connections:
+            if k not in self.nodes:
+                continue
+
+            node = self.nodes[k]
+
+            # PROTECT: Never prune edges belonging to the Respected Ten
+            if node.label in protected_labels:
+                continue
+
+            if node.connections:
+                # Prune only the weakest edges to maintain structural integrity
                 num = max(1, int(len(node.connections) * prune_fraction))
                 weak = sorted(node.connections.items(), key=lambda x: x[1])[:num]
-                for nbr, _ in weak: node.connections.pop(nbr, None)
+
+                for nbr, _ in weak:
+                    # Ensure the neighbor isn't a protected node before popping
+                    # (Optional: depends on if you want to keep 'incoming' edges to 0-9)
+                    node.connections.pop(nbr, None)
+
         self.version += 1
 
     def compute_manifold_variance(self):
@@ -316,3 +340,40 @@ class SharedConceptGraph(nn.Module):
                 source_vec = trace.view(-1)[:self.embedding_dim].to(self.device)
                 self.master_embeddings[new_id].copy_(source_vec)
         return new_id
+
+    def apply_origin_attractor(self, alpha=0.2, target_drift=1.0, protected_only=False):
+        """
+        ACTIVE RE-ANCHORING: Pulls nodes back toward their Epoch 0 coordinates.
+
+        Args:
+            alpha: The strength of the attractor (0.0 to 1.0).
+            target_drift: Only pulls nodes that have drifted beyond this threshold.
+            protected_only: If True, only pulls the Respected Ten (0-9).
+        """
+        num_active = len(self.node_order)
+        if num_active == 0: return
+
+        # Foundational Concepts to protect (0-9)
+        protected_labels = {str(i) for i in range(10)}
+
+        with torch.no_grad():
+            for i, node_key in enumerate(self.node_order):
+                node = self.nodes[node_key]
+
+                if protected_only and node.label not in protected_labels:
+                    continue
+
+                # The 'Origin' for Infant Stage is a tight uniform distribution around 0.
+                # Since we initialized at uniform_(-0.01, 0.01), our true origin is 0.
+                current_pos = self.master_embeddings[i]
+
+                # Calculate current Euclidean distance from origin
+                current_drift = torch.norm(current_pos, p=2)
+
+                if current_drift > target_drift:
+                    # HOMECOMING VECTOR: Directional pull back to (0,0,0...)
+                    # We apply a force proportional to the drift magnitude
+                    pull_back = -current_pos * alpha
+                    self.master_embeddings[i].add_(pull_back)
+
+            self.version += 1

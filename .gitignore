@@ -1,6 +1,8 @@
 # --- SAGE Project Specifics ---
 # Ignore the data directory (MNIST downloads and large model checkpoints)
-data/
+data/ImageNet/
+data/MNIST/
+
 training_data/
 *.pt
 *.pth

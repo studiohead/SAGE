@@ -15,7 +15,7 @@ SAGE processes information through 7 distinct developmental stages, each represe
 
 | Stage | Name        | Mathematical Operator             | Cognitive Milestone            |
 | ----- | ----------- | --------------------------------- | ------------------------------ |
-| 1     | Infant      | y = x + (W_i · mean(G)) + ε       | Stochastic Grounding           |
+| 1     | Infant      | $$y = x + (W_i \cdot \Phi(x, G)) + \epsilon$$Where $\Phi$ is the Centric Grounding Function $(x - \text{mean}(G))$.      | Stochastic Grounding           |
 | 2     | Toddler     | y = x + (W_i · (x ⊙ σ(mean(G))))  | Relational Orientation         |
 | 3     | Preschool   | y = x + W_i · Σ(Softmax(G) · G)   | Global Saliency Focus          |
 | 4     | Gradeschool | y = x + W_i · (G · W_proj)        | Categorical Logic & Manifolds  |
