@@ -7,7 +7,7 @@ SHARED_MODEL_CONFIG = {
 }
 
 # --- Stage-specific hyperparameters & Hardware-Aware Layer Mapping ---
-# Each stage owns a block. To ensure continuity, we use a 2-layer handshake.
+
 
 STAGE_HYPERPARAMS = {
     "Infant": {
@@ -24,14 +24,14 @@ STAGE_HYPERPARAMS = {
         "batch_size": 128,
         "epochs": 5,
         "confidence_threshold": 0.45,
-        "pressure_weight": 0.5,
+        "pressure_weight": 0.85,
         "max_manifold_tightness": 0.20,
-        "prune_fraction": 0.4,
-        "drift_penalty": 0.1     # ACTIVE: Anti-3.3377 shield
+        "prune_fraction": 0.675,
+        "drift_penalty": 0.1
     },
     "Toddler": {
-        "layer_start": 2,
-        "layer_end": 8,
+        "layer_start": 0,
+        "layer_end": 6,
         "training_layers": 6,
         "epsilon_scale": 0.08,    # Peak curiosity/exploration
         "learning_rate": 8e-4,
@@ -49,8 +49,8 @@ STAGE_HYPERPARAMS = {
         "drift_penalty": 0.05
     },
     "Preschool": {
-        "layer_start": 6,
-        "layer_end": 14,
+        "layer_start": 0,
+        "layer_end": 8,
         "training_layers": 8,
         "epsilon_scale": 0.05,
         "learning_rate": 5e-4,
@@ -67,8 +67,8 @@ STAGE_HYPERPARAMS = {
         "prune_fraction": 0.4
     },
     "Gradeschool": {
-        "layer_start": 12,
-        "layer_end": 22,
+        "layer_start": 0,
+        "layer_end": 10,
         "training_layers": 10,
         "epsilon_scale": 0.03,
         "learning_rate": 4e-4,
@@ -85,10 +85,10 @@ STAGE_HYPERPARAMS = {
         "prune_fraction": 0.3
     },
     "Teen": {
-        "layer_start": 20,
-        "layer_end": 32,
+        "layer_start": 0,
+        "layer_end": 10,
         "training_layers": 10,
-        "epsilon_scale": 0.02,
+        "epsilon_scale": 0.05, # Peak curiosity/exploration
         "learning_rate": 3e-4,
         "weight_decay": 1e-6,
         "dropout": 0.15,
@@ -98,14 +98,14 @@ STAGE_HYPERPARAMS = {
         "batch_size": 2,
         "epochs": 5,
         "confidence_threshold": 0.88,
-        "growth_confidence_floor": 0.51, # Logic for [2026-01-02] node creation
+        "growth_confidence_floor": 0.51,
         "pressure_weight": 0.2,
         "max_manifold_tightness": 0.35,
         "prune_fraction": 0.4
     },
     "Adult": {
-        "layer_start": 20,
-        "layer_end": 30,
+        "layer_start": 0,
+        "layer_end": 10,
         "training_layers": 10,
         "epsilon_scale": 0.01,
         "learning_rate": 2e-4,
@@ -118,13 +118,13 @@ STAGE_HYPERPARAMS = {
         "epochs": 5,
         "confidence_threshold": 0.92,
         "growth_confidence_floor": 0.6,
-        "pressure_weight": 0.1,   # Fine-tuning mode
+        "pressure_weight": 0.1,
         "max_manifold_tightness": 0.30,
         "prune_fraction": 0.5
     },
     "Elder": {
-        "layer_start": 28,
-        "layer_end": 40,
+        "layer_start": 0,
+        "layer_end": 12,
         "training_layers": 12,
         "epsilon_scale": 0.0,     # Crystallized Intelligence
         "learning_rate": 5e-5,
@@ -141,4 +141,5 @@ STAGE_HYPERPARAMS = {
         "max_manifold_tightness": 0.25,
         "prune_fraction": 0.40
     }
+    # and so on...
 }

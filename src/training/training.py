@@ -161,8 +161,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             logits, telemetry = frontend(
                 x,
                 sage_container,
-                graph_matrix=current_g_matrix,
-                centroid_addresses=c_addresses
+                graph_matrix=current_g_matrix
             )
 
             winner_indices = telemetry.get('winner_node_ids')
@@ -213,10 +212,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                     f"Pressure: {latent_pressure:.6f} | Density: {structural_density:.4f}{mem_str}")
 
             # --- MATURATION & EXPANSION ---
-            current_stage_idx = STAGE_ORDER.index(stage_key)
-            teen_stage_idx = STAGE_ORDER.index("Teen")
-
-            if current_stage_idx >= teen_stage_idx:
+            if stage_key in ["Teen", "Elder"]:
                 gh = GrowthHormone(floor=hparams.get("growth_confidence_floor", 0.51),
                                    ceiling=hparams.get("confidence_threshold", 0.88))
                 if 'raw_texts' in batch and len(batch['raw_texts']) > 0:
@@ -231,7 +227,9 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             # --- HEBBIAN WIRING ---
             target_threshold = hparams.get("confidence_threshold", 0.45)
             conf = telemetry.get('confidence', 0.0)
-            should_update = (stage_key == target_arg_stage) and (stage_key == "Infant" or conf >= target_threshold)
+            should_update = (stage_key == target_arg_stage) and (
+                    stage_key in ["Infant", "Teen", "Elder"] or conf >= target_threshold
+            )
 
             if should_update and winner_indices is not None:
                 trace = telemetry.get('trace')
@@ -258,7 +256,8 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
 
             batch_count += 1
         # Alpha 0.2 means we move nodes 20% closer to the origin in one shot
-        sage_container.graph.apply_origin_attractor(alpha=0.2, target_drift=0.5)
+        # sage_container.graph.apply_origin_attractor(alpha=0.2, target_drift=0.5)
+        sage_container.graph.apply_governed_gradient_update(lr=hparams["learning_rate"])
         print(f"[*] Epoch {epoch} complete. Initiating Synaptic Sleep Cycle...")
         sage_container.graph.apply_edge_threshold(min_weight=0.08)
 

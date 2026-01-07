@@ -105,52 +105,51 @@ class SharedConceptGraph(nn.Module):
         self.anchor_tensor[node_id] = F.normalize(updated_z, p=2, dim=0)
         self._cached_anchor_matrix = None
 
+    def get_active_gradient_masks(self, num_active):
+        """
+        [0017] THE SHIELD: Pulls the current plasticity state.
+        Ensures 0-9 stay viscous (0.001) while others stay plastic (1.0).
+        """
+        masks = []
+        for node_key in self.node_order[:num_active]:
+            # ModuleDict uses bracket notation, not .get()
+            node = self.nodes[node_key]
+
+            # Fetch viscosity; default to 1.0 (Plastic) if not set
+            mask_val = getattr(node, 'gradient_mask', 1.0)
+            masks.append(mask_val)
+
+        return torch.tensor(masks, device=self.device).unsqueeze(1)
+
     def get_graph_embedding_matrix(self):
         """
         The Central Matrix: Returns the live, differentiable manifold.
-
-        DYNAMIC LOGIC (REPAIRED):
-        1. Employs a Dimension-Aware radial ceiling to prevent spherical saturation.
-        2. Scaled for 256-D geometry: Replaces the restrictive 2.5 cap with
-           a ceiling tied to sqrt(EMBED_DIM).
-        3. Maintains Autograd 'Wet Suture' by bypassing cache during training.
         """
         num_active = len(self.node_order)
         if num_active == 0:
             return torch.zeros((0, self.embedding_dim), device=self.device)
 
-        # In training mode, we MUST ignore the cache to ensure the gradient
-        # path back to master_embeddings and master_alignments is never broken.
         if self.training or self._cached_matrix is None or self.version != self._last_version:
             embs = self.master_embeddings[:num_active]
 
-            # --- DYNAMIC POPULATION CEILING (Living Graph Final Fix) ---
-            # We use the square root of the dimension (16.0 for 256-D) as the
-            # anchor for conceptual volume expansion.
-            # This ensures the Manifold can scale to 100,000+ nodes without
-            # ever hitting a 'Hard Wall' or stalling Pressure.
+            # 1. FETCH THE SHIELD (The part that was missing)
+            g_masks = self.get_active_gradient_masks(num_active)
 
-            dim_base = math.sqrt(self.embedding_dim)  # 16.0
-            pop_factor = math.log10(max(10, num_active))  # ~3.89 for 8k nodes
-
-            # This expands the ceiling to ~15.5, giving the Pressure Engine
-            # massive runway to push past the .1756 stall point.
+            # 2. DYNAMIC CEILING MATH
+            dim_base = math.sqrt(self.embedding_dim)
+            pop_factor = math.log10(max(10, num_active))
             dynamic_ceiling = dim_base * (pop_factor / 4.0)
 
-            # Clamp alignments using the new expanded dynamic ceiling.
+            # 3. APPLY TOPOLOGICAL CONSTRAINTS
             aligns = torch.clamp(self.master_alignments[:num_active], 0.05, dynamic_ceiling)
-
-            # Pull the tombstone mask to zero-out suppressed/incinerated nodes
-            masks = self.tombstone_mask[:num_active]
-
-            # Normalization (L2) ensures we maintain a directional hypersphere basis.
-            # Added eps=1e-8 to prevent NaNs during high-pressure repulsion.
+            t_masks = self.tombstone_mask[:num_active]  # Reversible isolation
             norm_embs = F.normalize(embs, p=2, dim=1, eps=1e-8)
 
-            # RES is the final 'Sutured' tensor that the Frontend and Loss will see.
-            res = (norm_embs * aligns) * masks
+            # 4. FINAL ASSEMBLY (The Wet Suture)
+            # We combine the coordinates, the alignment, the tombstones, AND the shield
+            res = (norm_embs * aligns) * t_masks
+            res = res * g_masks  # Apply the Anchor Z Shield here
 
-            # Cache is only used for Inference/Testing to save compute.
             if not self.training:
                 self._cached_matrix = res
                 self._last_version = self.version
@@ -341,39 +340,52 @@ class SharedConceptGraph(nn.Module):
                 self.master_embeddings[new_id].copy_(source_vec)
         return new_id
 
-    def apply_origin_attractor(self, alpha=0.2, target_drift=1.0, protected_only=False):
-        """
-        ACTIVE RE-ANCHORING: Pulls nodes back toward their Epoch 0 coordinates.
+    # Inside SharedConceptGraph (src/graph/shared_concept_graph.py)
 
-        Args:
-            alpha: The strength of the attractor (0.0 to 1.0).
-            target_drift: Only pulls nodes that have drifted beyond this threshold.
-            protected_only: If True, only pulls the Respected Ten (0-9).
+    def apply_governed_gradient_update(self, lr):
         """
-        num_active = len(self.node_order)
-        if num_active == 0: return
+        [0015] THE SUTURE:
+        Applies gradients across the master blocks using 'Inertial Mass'
+        to regulate anchor evolution.
+        """
+        # --- PHYSICAL GUARD [0021] ---
+        # In sparse stages (Toddler), the gradient buffer may be None.
+        # We abort early to prevent subscripting a NoneType.
+        if self.master_embeddings.grad is None:
+            return
 
-        # Foundational Concepts to protect (0-9)
         protected_labels = {str(i) for i in range(10)}
 
         with torch.no_grad():
-            for i, node_key in enumerate(self.node_order):
-                node = self.nodes[node_key]
+            for idx, node_id in enumerate(self.node_order):
+                node = self.nodes[str(node_id)]
 
-                if protected_only and node.label not in protected_labels:
+                # Subscripting is now safe because of the guard above
+                grad = self.master_embeddings.grad[idx]
+
+                if grad is None:
                     continue
 
-                # The 'Origin' for Infant Stage is a tight uniform distribution around 0.
-                # Since we initialized at uniform_(-0.01, 0.01), our true origin is 0.
-                current_pos = self.master_embeddings[i]
+                # 1. VISCOSITY CHECK (Controlled Evolution)
+                # [0013.1] High Inertia for Anchors, full plasticity for others.
+                viscosity = 0.001 if node.label in protected_labels else 1.0
 
-                # Calculate current Euclidean distance from origin
-                current_drift = torch.norm(current_pos, p=2)
+                # 2. APPLY REGULATED UPDATE
+                update_vector = grad * lr * viscosity
+                self.master_embeddings[idx] -= update_vector
 
-                if current_drift > target_drift:
-                    # HOMECOMING VECTOR: Directional pull back to (0,0,0...)
-                    # We apply a force proportional to the drift magnitude
-                    pull_back = -current_pos * alpha
-                    self.master_embeddings[i].add_(pull_back)
+                # 3. ANCHOR Z SYNC
+                # Ensures 'Stable Reference Frame' follows evolution [0021].
+                if node_id in self.anchor_tensor:
+                    self.anchor_tensor[node_id] = self.master_embeddings[idx].clone()
 
-            self.version += 1
+                # 4. RE-NORMALIZATION
+                # 256-D Spherical Grounding maintenance.
+                self.master_embeddings[idx] = torch.nn.functional.normalize(
+                    self.master_embeddings[idx], p=2, dim=0, eps=1e-8
+                )
+
+        # 5. BUFFER CLEAR
+        # Only zero if the buffer exists (double-check for safety)
+        if self.master_embeddings.grad is not None:
+            self.master_embeddings.grad.zero_()

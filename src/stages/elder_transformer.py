@@ -1,6 +1,7 @@
 ##############################################################################
 # Elder | Functional Recursive Meta-Governance
 # Purpose: Reconciles Active Reasoning (Adult) with Global Stability (Centroids).
+# Let's add new node creation ability...
 ##############################################################################
 
 import torch

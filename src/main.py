@@ -64,11 +64,7 @@ class Frontend(nn.Module):
         # The classifier MUST act on the output of the SAGE Container
         self.classifier = nn.Linear(embed_dim, 1000)
 
-    def forward(self, x, sage_container, graph_matrix=None, centroid_addresses=None):
-        """
-        Surgically Repaired Forward Pass:
-        Ensures the final logits are a direct descendant of the graph_matrix.
-        """
+    def forward(self, x, sage_container, graph_matrix=None):
         if self.data_mode == "imagenet" and x.dim() == 4:
             latent = self.backbone(x)
         else:
@@ -80,22 +76,17 @@ class Frontend(nn.Module):
                 x = x.view(x.size(0), -1)
             latent = self.encoder(x)
 
-        # sage_input requirement: [Seq, Batch, Dim]
         sage_input = latent.unsqueeze(0)
 
-        # This is where the graph_matrix is fused with the input latent.
         fused_output, telemetry = sage_container(
             sage_input,
             graph_matrix=graph_matrix,
-            centroid_addresses=centroid_addresses
+            centroid_addresses=None  # anchors no longer needed
         )
 
-        # Squeezing the sequence dimension [1, B, D] -> [B, D]
         if fused_output.dim() == 3:
             fused_output = fused_output.squeeze(0)
 
-        # REPAIR: We pass the FUSED_OUTPUT to the classifier.
-        # This creates the backpropagation path to the master_embeddings.
         return self.classifier(fused_output), telemetry
 
 

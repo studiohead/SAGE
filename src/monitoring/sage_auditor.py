@@ -53,6 +53,12 @@ class SageAuditor:
                 try:
                     with torch.no_grad():
                         for node_id in target_ids:
+                            # SHIELD: Check if this node is a protected BROAD_CONCEPT
+                            node_label = getattr(self.graph.nodes.get(str(node_id)), 'label', None)
+                            if node_label in [str(i) for i in range(10)]:
+                                print(
+                                    f"[!] AUDIT BLOCK: Attempted {action} on Foundational Anchor {node_id}. Action Aborted.")
+                                continue  # Immune to incineration/tombstoning
                             if action == "INCINERATE":
                                 self.graph.execute_topological_incineration(node_id)
 
