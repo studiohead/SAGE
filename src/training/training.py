@@ -124,7 +124,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         loss_total, batch_count = 0.0, 0
 
         # Pull targets from your real config
-        target_var = hparams.get("max_manifold_tightness", 0.20)
+        target_var = hparams.get("max_structural_density", 0.20)
         p_weight = hparams.get("pressure_weight", 0.6)
 
         for batch in loader:
@@ -245,12 +245,12 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 print(" Done.")
 
                 # ADAPTIVE PRUNING
-                if structural_density > hparams.get("max_manifold_tightness", 0.20):
+                if structural_density > hparams.get("max_structural_density", 0.20):
                     sample_size = max(10, int(len(sage_container.graph.node_order) * 0.05))
                     random_sample = random.sample(sage_container.graph.node_order, sample_size)
                     target_prune_list = list(set(winner_indices + [int(r) for r in random_sample if str(r).isdigit()]))
                     sage_container.graph.adaptive_prune(
-                        tightness=structural_density, max_tightness=hparams.get("max_manifold_tightness", 0.20),
+                        tightness=structural_density, max_tightness=hparams.get("max_structural_density", 0.20),
                         prune_fraction=hparams.get("prune_fraction", 0.6), nodes_to_consider=target_prune_list
                     )
 

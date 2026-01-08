@@ -157,29 +157,42 @@ class SharedConceptGraph(nn.Module):
 
         return self._cached_matrix
 
-    def retrieve_manifold_context(self, current_latent, top_k=5):
-        """Retrieves semantic neighbors using vectorized similarity against anchors."""
-        if not self.anchor_tensor: return []
+    def retrieve_manifold_context(self, current_latent, top_k=None):
+        """
+        Retrieves context nodes for a given latent vector.
+        Returns list of tuples: (embedding, node_key)
+        """
+        if len(self.node_order) == 0:
+            return []
 
         current_device = current_latent.device
         query = F.normalize(current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent, p=2, dim=0)
 
-        if self._cached_anchor_matrix is None:
-            anchor_list = [self.anchor_tensor[int(nid)] for nid in self.node_order if int(nid) in self.anchor_tensor]
-            if not anchor_list: return []
-            self._cached_anchor_matrix = torch.stack(anchor_list).to(current_device)
+        scored_nodes = []
+        for node_key in self.node_order:
+            node = self.nodes[node_key]
+            if node.is_tombstoned:
+                continue
 
-        similarities = torch.mv(self._cached_anchor_matrix, query)
-        vals, idxs = torch.topk(similarities, k=min(top_k, similarities.size(0)))
+            # Use anchor if exists, otherwise use master_embeddings
+            anchor = self.anchor_tensor.get(int(node_key), self.master_embeddings[self.node_order.index(node_key)])
+            anchor = F.normalize(anchor.to(current_device), p=2, dim=0)
+
+            sim = F.cosine_similarity(query.unsqueeze(0), anchor.unsqueeze(0), dim=1).item()
+            scored_nodes.append((node_key, sim))
+
+        # Sort by similarity descending
+        scored_nodes.sort(key=lambda x: x[1], reverse=True)
+
+        if top_k is not None:
+            scored_nodes = scored_nodes[:top_k]
 
         context_data = []
-        for val, idx in zip(vals, idxs):
-            if val > 0.7:
-                node_key = self.node_order[idx.item()]
-                if not self.nodes[node_key].is_tombstoned:
-                    # Pull from live embeddings to allow context to influence training
-                    live_vec = F.normalize(self.master_embeddings[idx.item()], p=2, dim=0)
-                    context_data.append((live_vec.to(current_device), node_key))
+        for node_key, _ in scored_nodes:
+            idx = self.node_order.index(node_key)
+            emb = F.normalize(self.master_embeddings[idx], p=2, dim=0)
+            context_data.append((emb, node_key))
+
         return context_data
 
     def update_stage_aware_hebbian(self, stage_key, tightness, attention_map, batch_indices=None, stage_plasticity=1.0,

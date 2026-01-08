@@ -32,7 +32,7 @@ class ManifoldHealthTracker:
         # We now pull the specific target for the current stage.
         stage_key = stage_name.capitalize()
         hparams = STAGE_HYPERPARAMS.get(stage_key, {})
-        target_var = hparams.get("max_manifold_tightness", 0.20)
+        target_var = hparams.get("max_structural_density", 0.20)
 
         # Pressure is now 'Potential Repulsion'.
         # 0.0 means the manifold has reached its target breathing room.
@@ -58,7 +58,7 @@ class ManifoldHealthTracker:
         print(f"    - Total Edges: {total_edges}")
 
         # HEURISTIC ALERTS
-        if structural_density > hparams.get("max_manifold_tightness", 0.20) * 4:  # Adaptive threshold
+        if structural_density > hparams.get("max_structural_density", 0.20) * 4:  # Adaptive threshold
             print("    [!] WARNING: HIGH STRUCTURAL DENSITY. PRUNING RECOMMENDED.")
 
         if latent_pressure > 0.1:

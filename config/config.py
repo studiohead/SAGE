@@ -24,10 +24,10 @@ STAGE_HYPERPARAMS = {
         "batch_size": 128,
         "epochs": 5,
         "confidence_threshold": 0.45,
-        "pressure_weight": 0.85,
-        "max_manifold_tightness": 0.20,
+        "pressure_weight": 0.8,
+        "max_structural_density": 0.20,
         "prune_fraction": 0.675,
-        "drift_penalty": 0.1
+        "drift_penalty": 0.0
     },
     "Toddler": {
         "layer_start": 0,
@@ -40,11 +40,11 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 1.0,
         "plasticity_scale": 0.4,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 600},
-        "batch_size": 16,
+        "batch_size": 32,
         "epochs": 5,
         "confidence_threshold": 0.6,
         "pressure_weight": 0.5,
-        "max_manifold_tightness": 0.25, # Space expands for relational depth
+        "max_structural_density": 0.25, # Space expands for relational depth
         "prune_fraction": 0.5,
         "drift_penalty": 0.05
     },
@@ -63,7 +63,7 @@ STAGE_HYPERPARAMS = {
         "epochs": 5,
         "confidence_threshold": 0.7,
         "pressure_weight": 0.4,   # Focus starts shifting to Saliency
-        "max_manifold_tightness": 0.25,
+        "max_structural_density": 0.25,
         "prune_fraction": 0.4
     },
     "Gradeschool": {
@@ -77,12 +77,12 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 1.0,
         "plasticity_scale": 0.25,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 200},
-        "batch_size": 8,
+        "batch_size": 16,
         "epochs": 5,
-        "confidence_threshold": 0.82,
+        "confidence_threshold": 0.77,
         "pressure_weight": 0.3,   # Categorical logic requires stability
-        "max_manifold_tightness": 0.30,
-        "prune_fraction": 0.3
+        "max_structural_density": 0.30,
+        "prune_fraction": 0.4
     },
     "Teen": {
         "layer_start": 0,
@@ -95,12 +95,12 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.8,
         "plasticity_scale": 0.2,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 150},
-        "batch_size": 2,
+        "batch_size": 1,
         "epochs": 5,
-        "confidence_threshold": 0.88,
+        "confidence_threshold": 0.85,
         "growth_confidence_floor": 0.51,
         "pressure_weight": 0.2,
-        "max_manifold_tightness": 0.35,
+        "max_structural_density": 0.35,
         "prune_fraction": 0.4
     },
     "Adult": {
@@ -119,7 +119,7 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.92,
         "growth_confidence_floor": 0.6,
         "pressure_weight": 0.1,
-        "max_manifold_tightness": 0.30,
+        "max_structural_density": 0.30,
         "prune_fraction": 0.5
     },
     "Elder": {
@@ -138,7 +138,7 @@ STAGE_HYPERPARAMS = {
         "confidence_threshold": 0.95,
         "growth_confidence_floor": 0.7,
         "pressure_weight": 0.05,  # Minimal repulsion
-        "max_manifold_tightness": 0.25,
+        "max_structural_density": 0.25,
         "prune_fraction": 0.40
     }
     # and so on...
