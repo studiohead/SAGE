@@ -106,16 +106,11 @@ class SharedConceptGraph(nn.Module):
         self._cached_anchor_matrix = None
 
     def get_active_gradient_masks(self, num_active):
-        """
-        [0017] THE SHIELD: Pulls the current plasticity state.
-        Ensures 0-9 stay viscous (0.001) while others stay plastic (1.0).
-        """
         masks = []
         for node_key in self.node_order[:num_active]:
-            # ModuleDict uses bracket notation, not .get()
+            # Standard indexing for ModuleDict
             node = self.nodes[node_key]
-
-            # Fetch viscosity; default to 1.0 (Plastic) if not set
+            # Ensure we have a default value if the node was created without a mask
             mask_val = getattr(node, 'gradient_mask', 1.0)
             masks.append(mask_val)
 
@@ -157,41 +152,71 @@ class SharedConceptGraph(nn.Module):
 
         return self._cached_matrix
 
-    def retrieve_manifold_context(self, current_latent, top_k=None):
+    def retrieve_manifold_context(self, current_latent, top_k=5):
         """
-        Retrieves context nodes for a given latent vector.
-        Returns list of tuples: (embedding, node_key)
+        Optimized 256-dim Vectorized Retrieval.
+        Compatible with torch.nn.ModuleDict (No .get() method).
         """
         if len(self.node_order) == 0:
             return []
 
         current_device = current_latent.device
-        query = F.normalize(current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent, p=2, dim=0)
+        query = F.normalize(
+            current_latent.mean(dim=0) if current_latent.dim() > 1 else current_latent,
+            p=2, dim=0
+        )
 
-        scored_nodes = []
+        search_list = []
+        valid_keys = []
+
         for node_key in self.node_order:
-            node = self.nodes[node_key]
-            if node.is_tombstoned:
+            # ModuleDict check: replace .get() with 'in'
+            if node_key not in self.nodes:
+                # This is an INCINERATED node (missing from ModuleDict)
                 continue
 
-            # Use anchor if exists, otherwise use master_embeddings
-            anchor = self.anchor_tensor.get(int(node_key), self.master_embeddings[self.node_order.index(node_key)])
-            anchor = F.normalize(anchor.to(current_device), p=2, dim=0)
+            node = self.nodes[node_key]
 
-            sim = F.cosine_similarity(query.unsqueeze(0), anchor.unsqueeze(0), dim=1).item()
-            scored_nodes.append((node_key, sim))
+            # 1. Skip if Tombstoned (Inactive but present)
+            if getattr(node, "is_tombstoned", False):
+                continue
 
-        # Sort by similarity descending
-        scored_nodes.sort(key=lambda x: x[1], reverse=True)
+            # 2. Get the embedding (Priority: Anchor -> Master)
+            emb = self.anchor_tensor.get(int(node_key), None)
+            if emb is None:
+                try:
+                    idx = self.node_order.index(node_key)
+                    emb = self.master_embeddings[idx]
+                except ValueError:
+                    continue  # Safety check if index is missing
 
-        if top_k is not None:
-            scored_nodes = scored_nodes[:top_k]
+            search_list.append(emb)
+            valid_keys.append(node_key)
+
+        if not search_list:
+            return []
+
+        # 3. Build the manifold matrix [N x 256]
+        manifold_tensor = torch.stack(search_list).to(current_device)
+        manifold_tensor = F.normalize(manifold_tensor, p=2, dim=1)
+
+        # 4. Dimension Check (The 256-dim guardrail)
+        if query.shape[-1] != manifold_tensor.shape[-1]:
+            raise ValueError(f"Dim Mismatch: Prompt={query.shape[-1]}d, Graph={manifold_tensor.shape[-1]}d")
+
+        # 5. Parallel Similarity
+        similarities = torch.matmul(manifold_tensor, query)
+
+        # 6. Extract Top-K Results
+        k = min(top_k, len(valid_keys))
+        top_scores, top_indices = torch.topk(similarities, k)
 
         context_data = []
-        for node_key, _ in scored_nodes:
-            idx = self.node_order.index(node_key)
-            emb = F.normalize(self.master_embeddings[idx], p=2, dim=0)
-            context_data.append((emb, node_key))
+        for idx in top_indices:
+            node_key = valid_keys[idx.item()]
+            orig_idx = self.node_order.index(node_key)
+            emb_out = F.normalize(self.master_embeddings[orig_idx], p=2, dim=0)
+            context_data.append((emb_out, node_key))
 
         return context_data
 
@@ -300,8 +325,8 @@ class SharedConceptGraph(nn.Module):
         # Use membership check instead of .get() for ModuleDict compatibility
         keys = [str(n) for n in nodes_to_consider] if nodes_to_consider else self.node_order
 
-        # Foundational Concepts to protect (Tombstoned)
-        protected_labels = {str(i) for i in range(10)}
+        # Foundational Concepts to protect
+        protected_labels = {str(i) for i in range(400)}
 
         for k in keys:
             if k not in self.nodes:
@@ -344,13 +369,24 @@ class SharedConceptGraph(nn.Module):
                 node.stage_idx = stage_idx
 
     def create_node_from_trace(self, trace, label=None):
-        """Directly seeds a new node from a latent vector (Teen/Adult stage growth)."""
+        """Surgical node birth from latent trace."""
+        # Ensure new_id is unique and doesn't exceed max_nodes
         new_id = len(self.node_order)
+        if new_id >= self.max_nodes:
+            print(f"[!] Graph at capacity ({self.max_nodes}). Growth aborted.")
+            return None
+
+        # add_node handles the registration and active_mask update
         self.add_node(new_id, label=label)
+
         if isinstance(trace, torch.Tensor):
             with torch.no_grad():
-                source_vec = trace.view(-1)[:self.embedding_dim].to(self.device)
+                # Flatten and slice to match 256-dim
+                source_vec = trace.detach().view(-1)[:self.embedding_dim].to(self.device)
+                # Ensure the vector is normalized to the manifold's sphere
+                source_vec = F.normalize(source_vec, p=2, dim=0)
                 self.master_embeddings[new_id].copy_(source_vec)
+
         return new_id
 
     # Inside SharedConceptGraph (src/graph/shared_concept_graph.py)
@@ -367,7 +403,7 @@ class SharedConceptGraph(nn.Module):
         if self.master_embeddings.grad is None:
             return
 
-        protected_labels = {str(i) for i in range(10)}
+        protected_labels = {str(i) for i in range(400)}
 
         with torch.no_grad():
             for idx, node_id in enumerate(self.node_order):

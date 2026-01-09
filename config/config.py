@@ -12,8 +12,8 @@ SHARED_MODEL_CONFIG = {
 STAGE_HYPERPARAMS = {
     "Infant": {
         "layer_start": 0,
-        "layer_end": 4,
-        "training_layers": 4,
+        "layer_end": 2,
+        "training_layers": 2,
         "epsilon_scale": 0.05,
         "learning_rate": 1e-3,
         "weight_decay": 1e-4,  # Passive Centripetal pull
@@ -31,8 +31,8 @@ STAGE_HYPERPARAMS = {
     },
     "Toddler": {
         "layer_start": 0,
-        "layer_end": 6,
-        "training_layers": 6,
+        "layer_end": 4,
+        "training_layers": 4,
         "epsilon_scale": 0.08,    # Peak curiosity/exploration
         "learning_rate": 8e-4,
         "weight_decay": 1e-5,
@@ -50,8 +50,8 @@ STAGE_HYPERPARAMS = {
     },
     "Preschool": {
         "layer_start": 0,
-        "layer_end": 8,
-        "training_layers": 8,
+        "layer_end": 4,
+        "training_layers": 4,
         "epsilon_scale": 0.05,
         "learning_rate": 5e-4,
         "weight_decay": 5e-6,
@@ -59,7 +59,7 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 1.0,
         "plasticity_scale": 0.3,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 400},
-        "batch_size": 16,
+        "batch_size": 32,
         "epochs": 5,
         "confidence_threshold": 0.7,
         "pressure_weight": 0.4,   # Focus starts shifting to Saliency
@@ -68,8 +68,8 @@ STAGE_HYPERPARAMS = {
     },
     "Gradeschool": {
         "layer_start": 0,
-        "layer_end": 10,
-        "training_layers": 10,
+        "layer_end": 6,
+        "training_layers": 6,
         "epsilon_scale": 0.03,
         "learning_rate": 4e-4,
         "weight_decay": 5e-6,
@@ -86,27 +86,27 @@ STAGE_HYPERPARAMS = {
     },
     "Teen": {
         "layer_start": 0,
-        "layer_end": 10,
-        "training_layers": 10,
-        "epsilon_scale": 0.05, # Peak curiosity/exploration
-        "learning_rate": 3e-4,
+        "layer_end": 8,
+        "training_layers": 8,
+        "epsilon_scale": 0.04, # Peak curiosity/exploration
+        "learning_rate": 1.2e-4,
         "weight_decay": 1e-6,
         "dropout": 0.15,
         "gradient_clip": 0.8,
         "plasticity_scale": 0.2,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 150},
-        "batch_size": 1,
+        "batch_size": 2,
         "epochs": 5,
-        "confidence_threshold": 0.85,
-        "growth_confidence_floor": 0.51,
+        "confidence_threshold": 0.80,
+        "growth_confidence_floor": 0.65,
         "pressure_weight": 0.2,
         "max_structural_density": 0.35,
         "prune_fraction": 0.4
     },
     "Adult": {
         "layer_start": 0,
-        "layer_end": 10,
-        "training_layers": 10,
+        "layer_end": 8,
+        "training_layers": 8,
         "epsilon_scale": 0.01,
         "learning_rate": 2e-4,
         "weight_decay": 1e-6,
@@ -114,7 +114,7 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.7,
         "plasticity_scale": 0.1,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 100},
-        "batch_size": 1,
+        "batch_size": 2,
         "epochs": 5,
         "confidence_threshold": 0.92,
         "growth_confidence_floor": 0.6,
@@ -124,8 +124,8 @@ STAGE_HYPERPARAMS = {
     },
     "Elder": {
         "layer_start": 0,
-        "layer_end": 12,
-        "training_layers": 12,
+        "layer_end": 10,
+        "training_layers": 10,
         "epsilon_scale": 0.0,     # Crystallized Intelligence
         "learning_rate": 5e-5,
         "weight_decay": 0,

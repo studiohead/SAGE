@@ -44,6 +44,11 @@ class AdultTransformer(DevelopmentalTransformer):
 
     def forward(self, x, graph_matrix, centroid_addresses=None, Wi=1.0):
         """
+        [PATENT REF 0014]: Active Reasoning Path & Centroid Cohesion
+
+        Surgical Update: Divergence is now differentiable to act as
+        structural pressure, penalizing drift from the long-term context.
+
         x: [batch, seq_len, dim]
         graph_matrix: [nodes, dim]
         """
@@ -52,17 +57,19 @@ class AdultTransformer(DevelopmentalTransformer):
             x = x.transpose(0, 1)
 
         batch_size, seq_len, _ = x.shape
-        gamma_divergence = torch.tensor(0.0, device=x.device)
+        gamma_divergence = torch.tensor(0.0, device=x.device, requires_grad=True)
 
         if graph_matrix is not None:
             # 1. PREPARE THE MEMORY POOL
+            # Nodes represent the 'fixed' conceptual anchors for this stage
             nodes = graph_matrix.view(-1, self.embed_dim)
 
             # K_g/V_g shape: [batch, nodes, dim]
             K_g = self.k_proj(nodes).unsqueeze(0).repeat(batch_size, 1, 1)
             V_g = self.v_proj(nodes).unsqueeze(0).repeat(batch_size, 1, 1)
 
-            # 2. SURGICAL CROSS-ATTENTION (Retrieval)
+            # 2. SURGICAL CROSS-ATTENTION (Knowledge Retrieval)
+            # Query: Current Sequence | Key: Graph Manifold
             attn_out, attn_weights = self.cross_attn(
                 query=x,
                 key=K_g,
@@ -71,35 +78,49 @@ class AdultTransformer(DevelopmentalTransformer):
             )
 
             # 3. [PATENT REF 0014]: COMPUTE ACTIVE REASONING PATH
-            # Path_active = adult_attn_map × graph_matrix
-            # attn_weights: [batch, seq, nodes]
-            with torch.no_grad():
-                # Average attention across the sequence to get the 'trajectory'
-                avg_attn = attn_weights.mean(dim=1)  # [batch, nodes]
-                path_active = torch.matmul(avg_attn, nodes).mean(dim=0)  # [dim]
+            # We allow gradient flow here so the projections (k_proj, v_proj)
+            # learn to steer the reasoning path toward stable centroids.
+            avg_attn = attn_weights.mean(dim=1)  # [batch, nodes]
+            path_active = torch.matmul(avg_attn, nodes).mean(dim=0)  # [dim]
 
-                # Update Multi-Scale Centroids (EWMA)
-                self.short_term_centroid = (self.alpha_fast * self.short_term_centroid) + (
-                            (1 - self.alpha_fast) * path_active)
-                self.long_term_centroid = (self.alpha_slow * self.long_term_centroid) + (
-                            (1 - self.alpha_slow) * path_active)
+            # 4. DIFFERENTIABLE COHESION PRESSURE
+            # Compare current path (Fast) to the long-term context (Slow Wisdom)
+            # Long-term centroid is detached to act as a fixed 'North Star' for the gradient
+            cohesion_sim = F.cosine_similarity(
+                path_active.unsqueeze(0),
+                self.long_term_centroid.detach().unsqueeze(0)
+            )
 
-                # 4. COMPUTE INTERIM GAMMA (Divergence between fast and slow scales)
-                # This signals the Elder that the model is 'drifting' from context
-                gamma_divergence = 1.0 - F.cosine_similarity(self.short_term_centroid.unsqueeze(0),
-                                                             self.long_term_centroid.unsqueeze(0))
+            # This is the 'Friction' signal. High values indicate the Adult
+            # is hallucinating logic outside the established manifold.
+            gamma_divergence = 1.0 - cohesion_sim
 
+            # 5. SELECTIVE INTEGRATION & RESIDUAL REFINEMENT
+            # The 'Reasoning Path' is integrated into the sequence
             x = self.refiner_norm(x + (Wi * attn_out))
 
-        # 5. TRANSFORMER BACKBONE
+            # 6. PASSIVE CENTROID UPDATES (Exponential Weighted Moving Averages)
+            # We update the buffers without tracking gradients to maintain temporal stability
+            with torch.no_grad():
+                self.short_term_centroid.copy_(
+                    (self.alpha_fast * self.short_term_centroid) + ((1 - self.alpha_fast) * path_active)
+                )
+                self.long_term_centroid.copy_(
+                    (self.alpha_slow * self.long_term_centroid) + ((1 - self.alpha_slow) * path_active)
+                )
+
+        # 7. TRANSFORMER BACKBONE
+        # Processes the grounded sequence through deterministic layers
         for layer in self.layers:
             x = layer(x)
 
-        # Telemetry now includes path_active and centroids for the Elder Stage
+        # Telemetry provides the Elder stage with the 'Path History'
+        # and the Centroid Loss needed for the total training objective.
         telemetry = {
-            "gamma_divergence": gamma_divergence,
-            "path_active": self.short_term_centroid,  # The 'trace'
-            "context_anchor": self.long_term_centroid  # The 'stable reference'
+            "gamma_divergence": gamma_divergence.detach(),  # Clean metric for logs
+            "path_active": self.short_term_centroid,  # Rapid drift trace
+            "context_anchor": self.long_term_centroid,  # Long-term stability
+            "centroid_loss": gamma_divergence  # Gradient-active loss
         }
 
         return self.stage_weight * x, telemetry

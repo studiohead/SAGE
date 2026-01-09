@@ -220,6 +220,10 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
                 elif y is not None:
                     telemetry['text'] = f"node_label_{y[0].item()}"
 
+                div = telemetry.get("gamma_divergence", "N/A")
+                conf = telemetry.get("confidence", "N/A")
+                print(f"[DIAGNOSTIC] Conf: {conf} | Div: {div}")
+
                 new_node_id = gh.maybe_create_node(telemetry=telemetry, graph=sage_container.graph)
                 if new_node_id is not None:
                     print(f"\n>>> [!] {stage_key.upper()} GROWTH: Seeded Node {new_node_id}")
@@ -228,14 +232,14 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
             target_threshold = hparams.get("confidence_threshold", 0.45)
             conf = telemetry.get('confidence', 0.0)
             should_update = (stage_key == target_arg_stage) and (
-                    stage_key in ["Infant", "Teen", "Elder"] or conf >= target_threshold
+                    stage_key in ["Infant", "Gradeschool", "Teen", "Elder"] or conf >= target_threshold
             )
 
             if should_update and winner_indices is not None:
                 trace = telemetry.get('trace')
                 if trace is None: trace = torch.ones((1, len(winner_indices)), device=device)
 
-                print(f" [!] Hebbian Wiring...", end="", flush=True)
+                print(f" [!] Hebbian Wiring... at {conf}", end="", flush=True)
                 # tightness is now correctly logged as the clamped value
                 sage_container.graph.update_stage_aware_hebbian(
                     stage_key=stage_key, tightness=latent_pressure, attention_map=trace,
