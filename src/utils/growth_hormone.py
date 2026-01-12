@@ -3,91 +3,68 @@ import torch
 
 class GrowthHormone:
     """
-    Controller for Manifold Expansion (SAGE / Citizen/Elder).
-    Birthed nodes are anchored via semantic labels to maintain a shared concept map.
-
-    Updated: Implements Novelty Bypass to prevent 'Mastery Stagnation'
-    where high confidence scores block the creation of new conceptual anchors.
+    Controller for Manifold Expansion (SAGE / Citizen / Elder).
+    Regulates the birth of new nodes based on structural 'Pressure'.
     """
 
-    def __init__(self, floor=0.55, ceiling=0.85):
-        """
-        Args:
-            floor: The minimum confidence required to trust a sensory trace (Learning Zone Start).
-            ceiling: The maturity gate where a node is considered 'Mastered' (Learning Zone End).
-        """
+    def __init__(self, floor: object = 0.55, ceiling: object = 0.85, winner_indices: object = None) -> None:
         self.confidence_floor = floor
         self.confidence_ceiling = ceiling
+        self.winner_indices = winner_indices
+        self.batch_created_labels = set()  # Reset per batch to prevent explosion
 
     def preliminary_gate(self, telemetry):
-        """
-        Standard Check: Evaluates if the batch falls within the 'Learning Zone'.
-        We look for the 'Sweet Spot' between noise and mastery.
-        """
+        """Checks if the model is in the 'Learning Zone' (not mastered, not clueless)."""
         conf = telemetry.get("confidence", 1.0)
         return self.confidence_floor < conf < self.confidence_ceiling
 
     def has_potential_growth(self, telemetry):
         """
-        Deep Evaluation: Analyzes Gamma Divergence.
-        A divergence > 0.01 indicates that even if the category is known,
-        the current manifold shape is failing to represent this specific trace.
+        Determines if the structural divergence justifies a new node.
+        Target Gamma: > 0.033 (Structural Tension).
         """
-        return telemetry.get("gamma_divergence", 0.0) > 0.01
+        return telemetry.get("gamma_divergence", 0.0) > 0.033
 
     def maybe_create_node(self, telemetry, graph):
-        """
-        Surgical entry point for node birth.
-        Logic Flow:
-        1. If the Label is brand new -> GROW (Novelty Bypass).
-        2. If the Label exists but the model is 'Uncertain' and 'Divergent' -> GROW (Mathematical Expansion).
-        """
-        # 1. Data Extraction
-        trace_vec = telemetry.get("trace")
-        label_text = telemetry.get("text")
+        base_label = telemetry.get("text", "node")
+        conf = float(telemetry.get("confidence", 0.0))
+        pressure = telemetry.get("latent_pressure", 0.0)
+        gamma = telemetry.get("gamma_divergence", 0.0)
+        is_compressed = pressure > 0.10
 
-        # --- COLLISION GUARD 1: SEMANTIC LABEL ---
-        # Check if the label already exists in the graph's active nodes
-        existing_labels = {node.label for node in graph.nodes.values() if node.label is not None}
-
-        if label_text in existing_labels:
-            # LOGGING: Optional, but helpful to see why growth was aborted
-            # print(f"[-] Growth Aborted: Label '{label_text}' already exists.")
+        # 1. CEILING CHECK
+        if conf >= self.confidence_ceiling:
+            # If this prints, your ceiling is too low
+            # print(f"DEBUG: Ceiling Blocked (Conf {conf} >= Ceil {self.confidence_ceiling})")
             return None
 
-        conf = telemetry.get("confidence", 0.0)
+        # 2. THE GROWTH GATE
+        # This should be TRUE if Conf is 0.9881 and Floor is 0.99
+        if conf < self.confidence_floor:
 
-        if trace_vec is None:
-            return None
+            # 3. LABEL CHECK
+            if base_label in self.batch_created_labels:
+                # This is likely why growth is 'silent'
+                # print(f"DEBUG: Label '{base_label}' already created in this batch.")
+                return None
 
-        # 2. NOVELTY BYPASS CHECK
-        # We scan the graph to see if we've ever birthed a node for this specific label.
-        # This is the primary fix for your 0.97 confidence stagnation.
-        existing_labels = {node.label for node in graph.nodes.values() if node.label is not None}
-        is_novel = label_text not in existing_labels if label_text else False
+            # 4. DIVERGENCE CHECK
+            if not (self.has_potential_growth(telemetry) or is_compressed):
+                # If your gamma is low and pressure isn't registering here, growth dies.
+                # print(f"DEBUG: No Divergence/Pressure (Gamma: {gamma:.4f})")
+                return None
 
-        # 3. CONVERGENCE CHECK (Standard SAGE Growth)
-        # Only check the Gates if we aren't already bypassing via Novelty.
-        in_learning_zone = self.preliminary_gate(telemetry)
-        is_divergent = self.has_potential_growth(telemetry)
-
-        # 4. DECISION ENGINE
-        should_grow = is_novel or (in_learning_zone and is_divergent)
-
-        if should_grow:
-            # Create node in the Graph Manifold via the 256-dim trace
-            # graph.create_node_from_trace handles index allocation and ModuleDict registration
-            new_node_id = graph.create_node_from_trace(
-                trace=trace_vec,
-                label=label_text
-            )
-
+            # 5. EXECUTE
+            new_node_id = graph.create_node_from_trace(telemetry.get("trace"), label=base_label)
             if new_node_id is not None:
-                # Logging to verify which trigger was used
-                trigger_type = "NOVELTY" if is_novel else "DIVERGENCE"
-                print(
-                    f"[+] Growth Hormone triggered [{trigger_type}]: New node {new_node_id} (Label: {label_text}) | Conf: {conf:.4f}")
-
-            return new_node_id
+                self.batch_created_labels.add(base_label)
+                print(f"[+] BIRTH SUCCESS: Node {new_node_id}")
+                return new_node_id
+            else:
+                print("DEBUG: graph.create_node_from_trace returned None (Capacity?)")
 
         return None
+
+    def reset_batch(self):
+        """Called at the end of every training step to clear the label lockout."""
+        self.batch_created_labels.clear()

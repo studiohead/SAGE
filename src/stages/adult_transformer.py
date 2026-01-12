@@ -80,7 +80,10 @@ class AdultTransformer(DevelopmentalTransformer):
             # 3. [PATENT REF 0014]: COMPUTE ACTIVE REASONING PATH
             # We allow gradient flow here so the projections (k_proj, v_proj)
             # learn to steer the reasoning path toward stable centroids.
-            avg_attn = attn_weights.mean(dim=1)  # [batch, nodes]
+            #avg_attn = attn_weights.mean(dim=1)  # [batch, nodes]
+            epsilon = 5e-3
+            avg_attn = attn_weights.mean(dim=1) + (torch.rand_like(attn_weights.mean(dim=1)) * epsilon)
+
             path_active = torch.matmul(avg_attn, nodes).mean(dim=0)  # [dim]
 
             # 4. DIFFERENTIABLE COHESION PRESSURE

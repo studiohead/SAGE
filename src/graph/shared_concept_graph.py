@@ -106,44 +106,69 @@ class SharedConceptGraph(nn.Module):
         self._cached_anchor_matrix = None
 
     def get_active_gradient_masks(self, num_active):
+        """
+        Fetches the Anchor Z Shield values.
+        Handles 'Ghost Nodes' resulting from Incineration or incomplete Growth.
+        """
         masks = []
-        for node_key in self.node_order[:num_active]:
-            # Standard indexing for ModuleDict
-            node = self.nodes[node_key]
-            # Ensure we have a default value if the node was created without a mask
-            mask_val = getattr(node, 'gradient_mask', 1.0)
-            masks.append(mask_val)
 
-        return torch.tensor(masks, device=self.device).unsqueeze(1)
+        # We iterate based on the node_order to ensure spatial alignment
+        # with the master_embeddings tensor.
+        for node_key in self.node_order[:num_active]:
+
+            # 1. EXISTENCE CHECK (The KeyError Guard)
+            if node_key in self.nodes:
+                node = self.nodes[node_key]
+
+                # 2. TOMBSTONE CHECK
+                # If a node is tombstoned, we effectively kill its gradient shield
+                if getattr(node, "is_tombstoned", False):
+                    masks.append(0.0)
+                else:
+                    # 3. GRADIENT SHIELD RETRIEVAL
+                    mask_val = getattr(node, 'gradient_mask', 1.0)
+                    masks.append(mask_val)
+            else:
+                # 4. GHOST NODE HANDLING
+                # The node is in node_order but missing from the dictionary.
+                # We return 0.0 to ensure the tensor shape is preserved
+                # without allowing the ghost to influence the manifold.
+                masks.append(0.0)
+
+        # Return as a [N, 1] tensor for broadcasting
+        return torch.tensor(masks, device=self.device, dtype=torch.float32).unsqueeze(1)
 
     def get_graph_embedding_matrix(self):
         """
-        The Central Matrix: Returns the live, differentiable manifold.
+        RESTORATION: Differentiable manifold with RAW-EMBEDDING pressure.
+        This allows the Hinge Loss to push nodes apart in Euclidean space
+        before they are projected for the transformer stages.
         """
         num_active = len(self.node_order)
         if num_active == 0:
             return torch.zeros((0, self.embedding_dim), device=self.device)
 
         if self.training or self._cached_matrix is None or self.version != self._last_version:
+            # RAW EMBEDDINGS: The source of truth for the Pressure Engine
             embs = self.master_embeddings[:num_active]
-
-            # 1. FETCH THE SHIELD (The part that was missing)
             g_masks = self.get_active_gradient_masks(num_active)
 
-            # 2. DYNAMIC CEILING MATH
-            dim_base = math.sqrt(self.embedding_dim)
-            pop_factor = math.log10(max(10, num_active))
-            dynamic_ceiling = dim_base * (pop_factor / 4.0)
+            # 1. DYNAMIC MAGNITUDE (The 'Steam' for expansion)
+            # We increase the max clamp to 5.0 to allow the manifold to physically 'bloat'
+            # which drops confidence and triggers growth.
+            aligns = torch.clamp(self.master_alignments[:num_active], 0.05, 5.0)
+            t_masks = self.tombstone_mask[:num_active]
 
-            # 3. APPLY TOPOLOGICAL CONSTRAINTS
-            aligns = torch.clamp(self.master_alignments[:num_active], 0.05, dynamic_ceiling)
-            t_masks = self.tombstone_mask[:num_active]  # Reversible isolation
-            norm_embs = F.normalize(embs, p=2, dim=1, eps=1e-8)
-
-            # 4. FINAL ASSEMBLY (The Wet Suture)
-            # We combine the coordinates, the alignment, the tombstones, AND the shield
-            res = (norm_embs * aligns) * t_masks
-            res = res * g_masks  # Apply the Anchor Z Shield here
+            # 2. THE SAGE SWITCH:
+            # During training, we do NOT normalize. This lets the Hinge-Loss
+            # drive the master_embeddings apart by their raw values.
+            if self.training:
+                # Assembly without the unit-sphere constraint
+                res = (embs * aligns) * t_masks * g_masks
+            else:
+                # During inference/eval, we project to the sphere for stability
+                norm_embs = F.normalize(embs, p=2, dim=1, eps=1e-8)
+                res = (norm_embs * aligns) * t_masks * g_masks
 
             if not self.training:
                 self._cached_matrix = res
@@ -220,63 +245,116 @@ class SharedConceptGraph(nn.Module):
 
         return context_data
 
-    def update_stage_aware_hebbian(self, stage_key, tightness, attention_map, batch_indices=None, stage_plasticity=1.0,
-                                   threshold=None):
-        """Updates synaptic weights between nodes based on co-occurrence in the manifold."""
-        if not self.node_order: return 0
+    def update_stage_aware_hebbian(
+            self, stage_key, tightness, attention_map=None, batch_indices=None,
+            stage_plasticity=1.0, threshold=None, top_k=250
+    ):
+        """
+        Hebbian wiring: strengthens or creates edges; Teen stage prioritized for growth.
+        """
+
+        if not self.node_order:
+            return 0
 
         active_threshold = threshold if threshold is not None else self.promotion_threshold
 
-        # Initial wiring boost for empty graphs
+        # Empty graph: boost initial wiring
         if sum(len(n.connections) for n in self.nodes.values()) == 0:
-            active_threshold = 0.2
+            active_threshold = 0.05
 
-        if batch_indices is None:
-            active_idxs = list(range(len(self.node_order)))
-        else:
-            active_idxs = [self.node_order.index(str(nid)) for nid in batch_indices if str(nid) in self.nodes]
+        # Determine active nodes
+        active_idxs = (
+            list(range(len(self.node_order))) if batch_indices is None
+            else [self.node_order.index(str(nid)) for nid in batch_indices if str(nid) in self.nodes]
+        )
 
-        if not active_idxs: return 0
+        if not active_idxs:
+            return 0
 
-        # Detach for structural updates to prevent graph-internal cycles
         active_embs = F.normalize(self.master_embeddings[active_idxs].detach(), p=2, dim=1)
         full_manifold = self.get_graph_embedding_matrix().detach()
         cross_sim = torch.mm(active_embs, full_manifold.t())
 
-        top_vals, top_indices = torch.topk(cross_sim, k=min(50, full_manifold.size(0)), dim=1)
+        top_vals, top_indices = torch.topk(cross_sim, k=min(top_k, full_manifold.size(0)), dim=1)
 
         new_edges = 0
-        # Decay logic: As tightness (pressure) decreases, we solidify connections
-        decay = 0.95 if tightness > 0.1 else 0.99
 
         for i, master_idx in enumerate(active_idxs):
             node_key = self.node_order[master_idx]
             node = self.nodes[node_key]
-            for val, idx in zip(top_vals[i], top_indices[i]):
-                if val <= active_threshold: continue
-                target_key = self.node_order[idx.item()]
-                if node_key == target_key: continue
 
-                if target_key not in node.connections: new_edges += 1
-                curr_w = node.connections.get(target_key, 0.0)
-                node.connections[target_key] = (curr_w * decay) + (stage_plasticity * val.item())
+            if stage_key == "Teen":
+                node_decay = 0.99
+            elif stage_key == "Adult":
+                node_decay = 0.97
+            else:
+                node_decay = 0.95
+
+            for val, idx in zip(top_vals[i], top_indices[i]):
+                target_key = self.node_order[idx.item()]
+                if node_key == target_key or val <= active_threshold:
+                    continue
+
+                # Apply attention if given
+                if attention_map is not None:
+                    val = val * attention_map[i, idx]
+
+                # Hebbian update
+                prev_w = node.connections.get(target_key, 0.0)
+                node.connections[target_key] = (prev_w * node_decay) + (stage_plasticity * val)
+
+                # Symmetric update
+                target_node = self.nodes[target_key]
+                rev_prev_w = target_node.connections.get(node_key, 0.0)
+                target_node.connections[node_key] = (rev_prev_w * node_decay) + (stage_plasticity * val)
+
+                # Count new edges
+                if prev_w == 0.0:
+                    new_edges += 1
 
         self.version += 1
         return new_edges
 
     def execute_topological_incineration(self, node_id):
-        """Hard reset: Erase node and its influence completely."""
+        """
+        Hard reset: Erases the node's soul, metadata, and manifold presence.
+        Ensures no ghost keys remain in node_order.
+        """
         node_key = str(node_id)
         if node_key in self.nodes:
-            idx = self.node_order.index(node_key)
+            # 1. LOCATE HARDWARE INDEX
+            try:
+                idx = self.node_order.index(node_key)
+            except ValueError:
+                # Safety: If it's in nodes but not in order, the graph is already drifted.
+                del self.nodes[node_key]
+                return
+
             with torch.no_grad():
+                # 2. WIPE PHYSICAL PARAMETERS
+                # We zero these so that if the index is reused, it starts from a clean slate.
                 self.master_embeddings[idx].zero_()
                 self.master_alignments[idx].fill_(0.0)
-                self.tombstone_mask[idx] = 1.0
-            self.nodes[node_key].connections = {}
-            self.nodes[node_key].is_tombstoned = False
+
+                # 3. FLIP THE GUARDS
+                # active_mask must be 0.0 so the GrowthHormone knows this slot is 'empty'
+                self.active_mask[idx] = 0.0
+                self.tombstone_mask[idx] = 1.0  # Reset to neutral
+
+            # 4. SURGICAL REMOVAL OF THE SOUL
+            # Delete from the ModuleDict to prevent KeyError in get_active_gradient_masks
+            del self.nodes[node_key]
+
+            # Remove from the topological list
+            self.node_order.remove(node_key)
+
+            # 5. ANCHOR DESTRUCTION
+            if node_id in self.anchor_tensor:
+                del self.anchor_tensor[node_id]
+
             self.version += 1
-            self.update_local_centroid(node_id)
+            # No need to update local centroid of a dead node,
+            # but neighbors should eventually re-sync.
 
     def execute_manifold_tombstone(self, node_id, r_tomb):
         """Soft reset: Displace node and mask its variance contribution."""
@@ -307,17 +385,36 @@ class SharedConceptGraph(nn.Module):
             node.tombstone_key = None
             self.version += 1
 
-    def apply_edge_threshold(self, min_weight=0.08):
-        """Topological cleanup of weak synaptic associations."""
-        for node in self.nodes.values():
-            to_remove = [nbr for nbr, w in node.connections.items() if w < min_weight]
-            for nbr in to_remove: del node.connections[nbr]
-        self.version += 1
+    def apply_edge_threshold(self, min_weight=0.20):
+        """
+        Topological Cleanup: Removes weak synaptic associations.
+        This releases 'Topological Tension' and creates voids for new growth.
+        """
+        edges_removed = 0
 
-    def adaptive_prune(self, tightness, max_tightness=0.15, prune_fraction=0.4, nodes_to_consider=None):
+        # We iterate over the nodes in the ModuleDict
+        for node_key, node in self.nodes.items():
+            # Identify connections that have withered below the threshold
+            # node.connections is a dict: {neighbor_id: weight}
+            to_remove = [
+                neighbor_id for neighbor_id, weight in node.connections.items()
+                if weight < min_weight
+            ]
+
+            for neighbor_id in to_remove:
+                # Delete the edge from the dictionary
+                del node.connections[neighbor_id]
+                edges_removed += 1
+
+        self.version += 1
+        print(f"[!] Synaptic Cleanup: {edges_removed} weak edges incinerated (Threshold: {min_weight}).")
+        return edges_removed
+
+    def adaptive_prune(self, tightness, max_tightness=0.15, prune_fraction=0.4, nodes_to_consider=None,
+                       min_connections=2):
         """
         Reduces edge density when structural tightness exceeds limits.
-        SUTURE: Fixed ModuleDict .get() crash and added Tombstone protection for 0-9.
+        Only prunes nodes with at least `min_connections` edges.
         """
         if tightness <= max_tightness:
             return
@@ -335,17 +432,20 @@ class SharedConceptGraph(nn.Module):
             node = self.nodes[k]
 
             # PROTECT: Never prune edges belonging to the Respected Ten
-            if node.label in protected_labels:
+            if str(node.label) in protected_labels:
                 continue
 
-            if node.connections:
-                # Prune only the weakest edges to maintain structural integrity
-                num = max(1, int(len(node.connections) * prune_fraction))
-                weak = sorted(node.connections.items(), key=lambda x: x[1])[:num]
+            # Skip nodes with too few connections
+            if node.connections and len(node.connections) >= min_connections:
+                # Prune only the weakest edges
+                num_to_prune = int(len(node.connections) * prune_fraction)
+                if num_to_prune < 1:
+                    continue  # Skip if computed prune count < 1
+
+                weak = sorted(node.connections.items(), key=lambda x: x[1])[:num_to_prune]
 
                 for nbr, _ in weak:
                     # Ensure the neighbor isn't a protected node before popping
-                    # (Optional: depends on if you want to keep 'incoming' edges to 0-9)
                     node.connections.pop(nbr, None)
 
         self.version += 1
@@ -368,25 +468,50 @@ class SharedConceptGraph(nn.Module):
             if self.master_alignments[i] >= self.promotion_threshold:
                 node.stage_idx = stage_idx
 
-    def create_node_from_trace(self, trace, label=None):
-        """Surgical node birth from latent trace."""
-        # Ensure new_id is unique and doesn't exceed max_nodes
+    def create_node_from_trace(self, trace, label=None, initial_attachment_k=3):
+        """Surgical birth with immediate synaptic tethering and capacity guard."""
+
+        # --- THE GROWTH CAP (Original Guard) ---
         new_id = len(self.node_order)
         if new_id >= self.max_nodes:
             print(f"[!] Graph at capacity ({self.max_nodes}). Growth aborted.")
             return None
 
-        # add_node handles the registration and active_mask update
+        # 1. Standard registration
         self.add_node(new_id, label=label)
 
         if isinstance(trace, torch.Tensor):
             with torch.no_grad():
-                # Flatten and slice to match 256-dim
+                # Standardize the latent trace
                 source_vec = trace.detach().view(-1)[:self.embedding_dim].to(self.device)
-                # Ensure the vector is normalized to the manifold's sphere
                 source_vec = F.normalize(source_vec, p=2, dim=0)
+
+                # Write to physical manifold
                 self.master_embeddings[new_id].copy_(source_vec)
 
+                # 2. IMMEDIATE SYNC (Prevents retrieval invisibility)
+                self.anchor_tensor[new_id] = source_vec.clone()
+
+                # 3. INITIAL TETHERING
+                # We must tether here so the first EWMA update has context.
+                if new_id > 0:
+                    # Use detach to avoid bleeding gradients during birth
+                    full_matrix = self.get_graph_embedding_matrix().detach()
+
+                    # Compare against current manifold (excluding the node being born)
+                    sims = torch.matmul(full_matrix, source_vec)
+
+                    # Top-K closest existing concepts
+                    vals, idxs = torch.topk(sims[:-1], min(initial_attachment_k, new_id))
+
+                    new_node = self.nodes[str(new_id)]
+                    for v, i in zip(vals, idxs):
+                        target_key = self.node_order[i.item()]
+                        # Immediate bidirectional synaptic seeding
+                        new_node.connections[target_key] = v.item()
+                        self.nodes[target_key].connections[str(new_id)] = v.item()
+
+        self.version += 1
         return new_id
 
     # Inside SharedConceptGraph (src/graph/shared_concept_graph.py)
@@ -394,12 +519,9 @@ class SharedConceptGraph(nn.Module):
     def apply_governed_gradient_update(self, lr):
         """
         [0015] THE SUTURE:
-        Applies gradients across the master blocks using 'Inertial Mass'
-        to regulate anchor evolution.
+        Stage-Aware Inertial Mass.
+        Teen Stage: We allow magnitude expansion to break compression.
         """
-        # --- PHYSICAL GUARD [0021] ---
-        # In sparse stages (Toddler), the gradient buffer may be None.
-        # We abort early to prevent subscripting a NoneType.
         if self.master_embeddings.grad is None:
             return
 
@@ -408,33 +530,31 @@ class SharedConceptGraph(nn.Module):
         with torch.no_grad():
             for idx, node_id in enumerate(self.node_order):
                 node = self.nodes[str(node_id)]
-
-                # Subscripting is now safe because of the guard above
                 grad = self.master_embeddings.grad[idx]
 
                 if grad is None:
                     continue
 
-                # 1. VISCOSITY CHECK (Controlled Evolution)
-                # [0013.1] High Inertia for Anchors, full plasticity for others.
-                viscosity = 0.001 if node.label in protected_labels else 1.0
+                # 1. VISCOSITY CHECK
+                # For Teen expansion, we need mobility. 0.1 is good,
+                # but we can go to 0.5 if the manifold is still stubborn.
+                viscosity = 0.5 if node.label in protected_labels else 1.0
 
                 # 2. APPLY REGULATED UPDATE
                 update_vector = grad * lr * viscosity
                 self.master_embeddings[idx] -= update_vector
 
                 # 3. ANCHOR Z SYNC
-                # Ensures 'Stable Reference Frame' follows evolution [0021].
                 if node_id in self.anchor_tensor:
+                    # We sync the raw, expanded vector to the anchor
                     self.anchor_tensor[node_id] = self.master_embeddings[idx].clone()
 
-                # 4. RE-NORMALIZATION
-                # 256-D Spherical Grounding maintenance.
-                self.master_embeddings[idx] = torch.nn.functional.normalize(
-                    self.master_embeddings[idx], p=2, dim=0, eps=1e-8
-                )
+                # 4. CONDITIONAL RE-NORMALIZATION [CRITICAL FIX]
+                # During Teen growth, we STOP normalizing here.
+                # Let the magnitude grow. 'get_graph_embedding_matrix'
+                # handles the projection. Only normalize in 'Adult' or 'Elder'.
+                # If we normalize here, we kill the 'Expansion Steam'.
+                pass
 
-        # 5. BUFFER CLEAR
-        # Only zero if the buffer exists (double-check for safety)
         if self.master_embeddings.grad is not None:
             self.master_embeddings.grad.zero_()

@@ -7,6 +7,8 @@ import torch.optim as optim
 import argparse
 import numpy as np
 from torch.utils.data import DataLoader
+# Removed the ambiguous 'from torch.utils.tensorboard.summary import hparams'
+# to prevent naming collisions with STAGE_HYPERPARAMS
 from torchvision import datasets, transforms
 
 import data.seeder_concepts
@@ -29,6 +31,7 @@ from src.stages.teen_transformer import TeenTransformer
 from src.stages.adult_transformer import AdultTransformer
 from src.stages.elder_transformer import ElderTransformer
 from src.training.training import run_train_cycle
+from src.utils.growth_hormone import GrowthHormone
 
 # -------------------------
 # STAGE & CONFIG CONSTANTS
@@ -98,7 +101,7 @@ def main():
     parser.add_argument("--load", type=str)
     parser.add_argument("--up_to_stage", default=None)
     parser.add_argument("--data", choices=["mnist", "text", "imagenet"], default="mnist")
-    parser.add_argument("--text_path", type=str, default="training_data/primitives.txt")
+    parser.add_argument("--text_path", type=str, default="training_data/pr_25000.txt")
     parser.add_argument("--audit_level",
                         choices=["SAGE_DELEGATED", "FORCED_INCINERATE", "FORCED_TOMBSTONE", "DISABLED"],
                         default="SAGE_DELEGATED")
@@ -162,7 +165,15 @@ def main():
     }
 
     auditor = SageAuditor(graph, mode=args.audit_level)
-    sage_container = SAGEContainer(graph, stage_models, {s: {"pattern_acc": 0.8} for s in STAGE_ORDER}, auditor).to(device)
+
+    # SUTURE: SAGEContainer now accepts 'gh' to allow internal birth logic
+    sage_container = SAGEContainer(
+        graph,
+        stage_models,
+        {s: {"pattern_acc": 0.8} for s in STAGE_ORDER},
+        auditor
+    ).to(device)
+
     tokenizer = GraphTokenizer(graph=graph)
 
     # 5. LOAD WEIGHTS
@@ -189,21 +200,29 @@ def main():
                 from data.text_dataloader import get_sage_text_loader
                 loader = get_sage_text_loader(args.text_path, graph, stage_name)
             elif args.data == "mnist":
-                # SUTURE: Added 'tokenizer' to the arguments
                 loader = get_sage_mnist_loader(stage_name, graph, tokenizer, train=True, device=device)
             elif args.data == "imagenet":
                 from data.imagenet_dataloader import get_sage_imagenet_loader
                 loader = get_sage_imagenet_loader(stage_name, graph, train=True, device=device)
 
             # --- SAGE GRADIENT SUTURE VERIFICATION ---
-            # Ensure the graph parameters are explicitly trainable before handing over to the loop
+            graph.train()
             for param in graph.parameters():
                 param.requires_grad = True
 
+            # RESOLVED: Corrected variable naming to 'current_hparams' and 'stage_name'
+            current_hparams = STAGE_HYPERPARAMS[stage_name]
+
+            # Initialize GH with stage-specific thresholds
+            gh = GrowthHormone(
+                floor=current_hparams.get("growth_confidence_floor", 0.99),
+                ceiling=current_hparams.get("confidence_ceiling", 1.0)
+            )
+
+            # REMOVE 'gh' from this call
             run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, args, governor, loader)
 
     elif args.mode == "test_manifold":
-        # Force a training-mode pass to see the live differentiable variance
         graph.train()
         variance = graph.compute_manifold_variance()
         print(f"[MANIFOLD] Nodes: {len(graph.nodes)} | Conceptual Variance: {variance.item():.6f}")

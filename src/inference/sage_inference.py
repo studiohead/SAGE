@@ -7,6 +7,7 @@ class SAGEInference:
     Inference interface for SharedConceptGraph (SAGE / Citizen/Elder).
     Provides conceptual transparency by exposing thinking trajectories,
     anchors, and identifying the state of graph nodes (Active, Tombstoned, or Incinerated).
+    Supports interactive demotion feedback during inference.
     """
 
     def __init__(self, graph, tokenizer, broad_concepts=None):
@@ -20,12 +21,12 @@ class SAGEInference:
         """
         self.graph = graph
         self.tokenizer = tokenizer
-        # BROAD_CONCEPTS: list of strings at the front of the seeding
         self.broad_concepts = broad_concepts if broad_concepts else []
 
-    def respond(self, prompt, top_k=5, return_impact=False, return_full_path=False):
+    def respond(self, prompt, top_k=5, return_impact=False, return_full_path=False, interactive=False):
         """
         Retrieves top_k semantically relevant nodes and optionally traverses the graph.
+        Supports interactive feedback for demotion.
 
         Returns:
             Labels, novelty scores, or a full thinking trace dictionary.
@@ -43,7 +44,6 @@ class SAGEInference:
         prompt_emb = prompt_emb.to(device)
 
         # --- 2. Retrieve top-k context ---
-        # The graph's retrieve_manifold_context handles the 256-dim matrix math
         context_data = self.graph.retrieve_manifold_context(prompt_emb, top_k=top_k)
 
         response_labels = []
@@ -52,7 +52,6 @@ class SAGEInference:
         for _, node_id in context_data:
             node_key = str(node_id)
 
-            # ModuleDict does not support .get(); using 'in' check for Incineration detection
             if node_key not in self.graph.nodes:
                 response_labels.append(f"[INCINERATED:{node_key}]")
             else:
@@ -74,7 +73,6 @@ class SAGEInference:
                 if len(retrieved_indices) > 0 and manifold.size(0) > 0:
                     retrieved_embs = F.normalize(manifold[retrieved_indices], p=2, dim=1)
                     prompt_vec = F.normalize(prompt_emb.mean(dim=0), p=2, dim=0)
-                    # Vectorized similarity check for novelty
                     cos_sim = torch.matmul(retrieved_embs, prompt_vec)
                     novelty = 1.0 - cos_sim.clamp(0.0, 1.0)
                     impact_score = novelty.mean().item()
@@ -91,6 +89,38 @@ class SAGEInference:
             if return_impact:
                 return thinking_trace, impact_score
             return thinking_trace
+
+        # --- 5. Interactive feedback for demotion ---
+        if interactive and response_labels:
+            print(f"\nTop-{len(response_labels)} nodes for prompt '{prompt}':")
+            for idx, label in enumerate(response_labels):
+                print(f"{idx}: {label}")
+            print("\nType '/demote <index> [<decay>]' to weaken a node, or press Enter to continue.")
+
+            user_input = input(">> ").strip()
+            if user_input.startswith("/demote"):
+                try:
+                    parts = user_input.split()
+                    if len(parts) >= 2:
+                        demote_idx = int(parts[1])
+                        decay_factor = float(parts[2]) if len(parts) == 3 else 0.5
+                        if 0 <= demote_idx < len(context_data):
+                            _, node_id = context_data[demote_idx]
+                            node_key = str(node_id)
+                            node = self.graph.nodes.get(node_key, None)
+                            if node is not None:
+                                for target_key in list(node.connections.keys()):
+                                    node.connections[target_key] *= decay_factor
+                                    if target_key in self.graph.nodes:
+                                        target_node = self.graph.nodes[target_key]
+                                        if node_key in target_node.connections:
+                                            target_node.connections[node_key] *= decay_factor
+                                self.graph.version += 1
+                                print(f"[+] Demoted node {node_key} with decay factor {decay_factor}")
+                        else:
+                            print("[!] Invalid index for demotion.")
+                except Exception as e:
+                    print(f"[!] Error processing demotion: {e}")
 
         if return_impact:
             return response_labels, impact_score
@@ -118,7 +148,6 @@ class SAGEInference:
                 return
             visited.add(node_key)
 
-            # --- 1. Incineration Detection (Key missing from ModuleDict) ---
             if node_key not in self.graph.nodes:
                 trace["path_labels"].append(f"[INCINERATED:{node_key}]")
                 trace["node_indices"].append(node_key)
@@ -127,29 +156,23 @@ class SAGEInference:
 
             node = self.graph.nodes[node_key]
 
-            # --- 2. Tombstone Detection (Marker exists but node is dead) ---
             if getattr(node, "is_tombstoned", False):
                 trace["path_labels"].append(f"[TOMBSTONE:{node_key}]")
                 trace["node_indices"].append(node_key)
                 trace["tombstones_encountered"].append(node_key)
-                return  # Stop traversal; do not follow connections of a tombstone
+                return
 
-            # --- 3. Active Node Processing ---
             trace["path_labels"].append(node.label if node.label else node_key)
             trace["node_indices"].append(node_key)
 
-            # --- Path Analysis: Anchor Detection (Elder Logic) ---
             try:
-                # Check numeric index against the BROAD_CONCEPTS range
                 node_idx_val = int(node_key)
                 if node_idx_val < len(self.broad_concepts):
                     trace["anchors_detected"].add(self.broad_concepts[node_idx_val])
             except ValueError:
-                # Check for direct string matches if keys are alphanumeric
                 if node_key in self.broad_concepts:
                     trace["anchors_detected"].add(node_key)
 
-            # Recurse through logical connections established during training
             if hasattr(node, "connections") and node.connections:
                 for nbr in node.connections:
                     dfs(str(nbr), depth + 1)
@@ -157,7 +180,6 @@ class SAGEInference:
         for nk in start_nodes:
             dfs(str(nk), 0)
 
-        # Finalize trace
         trace["anchors_detected"] = list(trace["anchors_detected"])
         return trace
 

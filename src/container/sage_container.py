@@ -42,10 +42,11 @@ class StageFusion(nn.Module):
 
 
 class SAGEContainer(nn.Module):
-    def __init__(self, graph, stage_models, thresholds, auditor=None, governance_mode="SAGE_DELEGATED",
+    def __init__(self, graph, stage_models, thresholds, auditor=None, gh=None, governance_mode="SAGE_DELEGATED",
                  layer_start=0, layer_end=12, training_layers=12):
         super().__init__()
         self.graph = graph
+        self.gh = gh  # <--- SUTURE: Direct link to the Growth Engine
         self.stage_names = ["Infant", "Toddler", "Preschool", "Gradeschool", "Teen", "Adult", "Elder"]
         self.stages = nn.ModuleDict(stage_models)
         self.thresholds = thresholds
