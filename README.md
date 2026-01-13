@@ -54,8 +54,6 @@ The “Immune System” of the architecture. When the Sage Stage detects a trust
 ---
 
 ## PROJECT STRUCTURE
-
-## PROJECT STRUCTURE
 ```
 sage_project/
 ├── src/
