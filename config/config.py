@@ -21,12 +21,12 @@ STAGE_HYPERPARAMS = {
         "gradient_clip": 0.8,
         "plasticity_scale": 0.5,
         "scheduler": {"type": "linear_warmup", "warmup_steps": 800},
-        "batch_size": 128,
+        "batch_size": 64,
         "epochs": 5,
         "confidence_ceiling": 0.45,
         "pressure_weight": 0.8,
         "max_structural_density": 0.20,
-        "prune_fraction": 0.675,
+        "prune_fraction": 0.6,
         "drift_penalty": 0.0
     },
     "Toddler": {
@@ -98,10 +98,10 @@ STAGE_HYPERPARAMS = {
     "batch_size": 2,
     "epochs": 5,
     "confidence_ceiling": 1.0,
-    "growth_confidence_floor": 0.99,   # seed growth earlier
+    "growth_confidence_floor": 0.98,   # seed growth earlier
     "pressure_weight": 0.2,
     "max_structural_density": 0.40,    # allow more edges before pruning
-    "prune_fraction": 0.2              # no pruning during Teen stage
+    "prune_fraction": 0.0              # no pruning during Teen stage
 },
     "Adult": {
         "layer_start": 0,

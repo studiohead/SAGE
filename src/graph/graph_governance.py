@@ -42,6 +42,8 @@ class GraphGovernance:
                     'alignment_score': graph.master_alignments[idx].data.cpu(),
                     'connections': node.connections,
                     'stage_idx': getattr(node, 'stage_idx', -1),
+                    #'is_permanent': node.is_permanent,
+                    'is_permanent': getattr(node, 'is_permanent', False),
                     'is_tombstoned': node.is_tombstoned,
                     'tombstone_key': node.tombstone_key.cpu() if node.tombstone_key is not None else None,
                     'label': getattr(node, 'label', None),
@@ -101,12 +103,13 @@ class GraphGovernance:
                     # SAGE REPAIR: Strict Tombstone Mask Restoration
                     # If the node was tombstoned, the mask MUST remain 0.0
                     t_mask = data.get('tombstone_mask', torch.ones(1)).to(device)
-                    if data.get('is_tombstoned', False):
+                    if data.get('is_tombstoned', False) and not data.get('is_permanent', False):
                         t_mask = torch.zeros_like(t_mask)
                     graph.tombstone_mask[idx].copy_(t_mask)
 
                 # 2. RESTORE METADATA
                 node.connections = data['connections']
+                node.is_permanent = data.get('is_permanent', False)
                 node.is_tombstoned = data.get('is_tombstoned', False)
                 node.tombstone_key = data['tombstone_key'].to(device) if data.get('tombstone_key') is not None else None
                 node.stage_idx = data.get('stage_idx', -1)

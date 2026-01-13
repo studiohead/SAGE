@@ -6,51 +6,54 @@ A Multistage Developmental Cognitive Architecture with Asynchronous Topological 
 [![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Framework: PyTorch](https://img.shields.io/badge/Framework-PyTorch-ee4c2c.svg)](https://pytorch.org/)
 
-SAGE is not a standard LLM. It is a Self-Correcting Cognitive Architecture designed to solve the “Immutability of Lies” in neural networks. Unlike traditional models that require total retraining to unlearn misinformation, SAGE utilizes a Hierarchical Governance Ladder and a Structured Concept Graph to surgically identify, isolate, and remediate deceptive weight manifolds in real-time.
+SAGE is not a standard LLM. It is a Self-Correcting Cognitive Architecture designed to solve the “Immutability of Lies” in neural networks. Unlike traditional models that require total retraining to unlearn misinformation, SAGE utilizes a Hierarchical Governance Ladder and a **Shared Structured Concept Graph** to surgically identify, isolate, and remediate deceptive weight manifolds in real-time. All layers now live in a **single global model**, and each stage grows the shared graph biologically, reinforcing semantic concepts cumulatively.
 
-CORE INNOVATIONS
-1. The Logarithmic Complexity Ladder
+---
 
-SAGE processes information through 7 distinct developmental stages, each representing an increase in mathematical complexity and trust authority. As the system matures, it shifts from stochastic grounding to recursive meta-governance.
+## CORE INNOVATIONS
 
-| Stage | Name        | Mathematical Operator             | Cognitive Milestone            |
-| ----- | ----------- | --------------------------------- | ------------------------------ |
-| 1     | Infant      | $$y = x + (W_i \cdot \Phi(x, G)) + \epsilon$$Where $\Phi$ is the Centric Grounding Function $(x - \text{mean}(G))$.      | Stochastic Grounding           |
-| 2     | Toddler     | y = x + (W_i · (x ⊙ σ(mean(G))))  | Relational Orientation         |
-| 3     | Preschool   | y = x + W_i · Σ(Softmax(G) · G)   | Global Saliency Focus          |
-| 4     | Gradeschool | y = x + W_i · (G · W_proj)        | Categorical Logic & Manifolds  |
-| 5     | Teen        | y = Gumbel-Softmax(x, W_i · G)    | Competitive Arbitration        |
-| 6     | Adult       | y = CrossAttention(Q=x, K,V=G)    | Selective Relational Reasoning |
-| 7     | Sage        | y = SchemaInduction(Trace ⊗ Mask) | Recursive Meta-Governance      |
+### 1. The Logarithmic Complexity Ladder
 
+SAGE processes information through **7 developmental stages**, each representing an increase in mathematical complexity and cognitive authority. As the system matures, it shifts from stochastic grounding to recursive meta-governance, sculpting the shared graph progressively.
 
-Each stage supports dynamic hyperparameters via config.config.STAGE_HYPERPARAMS, allowing adjustment of plasticity, training layers, and epsilon scaling during inference.
+| Stage | Name        | Mathematical Operator                                       | Cognitive Milestone               |
+| ----- | ----------- | ----------------------------------------------------------- | -------------------------------- |
+| 1     | Infant      | $$y = x + (W_i \cdot \Phi(x, G)) + \epsilon$$ Where $\Phi$ is the Centric Grounding Function $(x - \text{mean}(G))$. | Stochastic Grounding             |
+| 2     | Toddler     | y = x + (W_i · (x ⊙ σ(mean(G))))                             | Relational Orientation           |
+| 3     | Preschool   | y = x + W_i · Σ(Softmax(G) · G)                               | Global Saliency Focus            |
+| 4     | Gradeschool | y = x + W_i · (G · W_proj)                                    | Categorical Logic & Manifolds    |
+| 5     | Teen        | y = Softmax-Weighted Integration(x, x_memory)                | Competitive Arbitration          |
+| 6     | Adult       | y = CrossAttention(Q=x, K,V=G)                                | Selective Relational Reasoning   |
+| 7     | Sage        | y = SchemaInduction(Trace ⊗ Mask)                             | Recursive Meta-Governance        |
+
+Each stage supports dynamic hyperparameters via `config.config.STAGE_HYPERPARAMS`, allowing adjustment of plasticity, training layers, and epsilon scaling during inference.
+
+---
 
 ## 2. Shared Concept Graph (Topological Memory)
 
-Unlike black-box models, SAGE stores persistent relational knowledge in a structured, addressable graph:
+Unlike black-box models, SAGE stores **persistent relational knowledge** in a structured, addressable graph:
 
-Intrinsic Centroid Anchoring: Concepts are addressed via centroids in a Versioned Anchor Tensor (Z), enabling O(1) targeting of conceptual clusters with Exponentially Weighted Moving Averages (EWMA).
+- **Intrinsic Centroid Anchoring**: Concepts are addressed via centroids in a Versioned Anchor Tensor (Z), enabling O(1) targeting of conceptual clusters with Exponentially Weighted Moving Averages (EWMA).  
+- **Digital Scar Tissue**: Nodes involved in trust breaches have `alignment_score` reduced to zero, creating permanent “cauterized” zones that inhibit relearning deceptive patterns.  
+- **Governance-Aware Hebbian Updates**: Attention-driven relational updates respect scar tissue and null-space quarantine, ensuring safe incremental learning.
 
-Digital Scar Tissue: Nodes involved in trust breaches have alignment_score reduced to zero, creating permanent “cauterized” zones that inhibit relearning deceptive patterns.
-
-Governance-Aware Hebbian Updates: Attention-driven relational updates respect scar tissue and null-space quarantine, ensuring safe incremental learning.
+---
 
 ## 3. Asynchronous Remediation Physics
 
 The “Immune System” of the architecture. When the Sage Stage detects a trust breach (low Γ confidence):
 
-Evidence Capture: Isolates the Adult Stage’s Attention Map (the Evidence Trace).
+- **Evidence Capture**: Isolates the Adult Stage’s Attention Map (the Evidence Trace).  
+- **Dispatch**: Sends a report to the Sage Auditor running on a high-priority background thread.  
+- **Remediation**:  
+  - **Ablative Zeroing (Incineration)**: Surgically zeros weights and masks gradients permanently.  
+  - **Null-Space Rotation (Tombstoning)**: Reversible displacement of disputed facts into a non-addressable orthogonal subspace (R_tomb) for quarantine.  
+  - **Recovery**: Tombstoned nodes can be restored via inverse projection (R_tombᵀ), resuming plasticity without global retraining.
 
-Dispatch: Sends a report to the Sage Auditor running on a high-priority background thread.
+---
 
-Remediation:
-
-Ablative Zeroing (Incineration): Surgically zeroes weights and masks gradients permanently.
-
-Null-Space Rotation (Tombstoning): Reversible displacement of disputed facts into a non-addressable orthogonal subspace (R_tomb) for quarantine.
-
-Recovery: Tombstoned nodes can be restored via inverse projection (R_tombᵀ), resuming plasticity without global retraining.
+## PROJECT STRUCTURE
 
 ## PROJECT STRUCTURE
 ```
@@ -119,14 +122,14 @@ Simulated Breach Test
 
 Injects a simulated “deceptive fact” into a centroid.
 
-Triggers Auditor and performs Null-Space Rotation / Remediation.
+Injects a simulated “deceptive fact” into a centroid, triggers the Auditor, and performs Null-Space Rotation / Remediation.
+
+---
 
 ## WHY SAGE MATTERS
 
-**Surgical Deletion**: Comply with “Right to be Forgotten” by permanently incinerating conceptual manifolds.
+- **Surgical Deletion**: Comply with “Right to be Forgotten” by permanently incinerating conceptual manifolds.  
+- **Traceability**: Audit the exact attention map (Reasoning Trace) used to justify any output.  
+- **Resilience**: Immune system cleans memory post-facto, maintaining model stability even under noisy or adversarial inputs.  
 
-**Traceability**: Audit the exact attention map (Reasoning Trace) used to justify any output.
-
-**Resilience**: Immune system cleans memory post-facto, maintaining model stability even under noisy or adversarial inputs.
-
-SAGE allows real-time remediation of misinformation without global retraining, using Hierarchical Governance and Centroid-Anchored Memory.
+SAGE allows real-time remediation of misinformation without global retraining, using **Hierarchical Governance** and **Centroid-Anchored Memory**. Each stage incrementally sculpts the shared graph in a **biologically-inspired, developmental progression**, producing interpretable and semantically-structured reasoning.

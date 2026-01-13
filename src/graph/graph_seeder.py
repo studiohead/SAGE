@@ -59,56 +59,64 @@ class SAGEGraphSeeder:
 
         print("[+] Manifold Grounding Complete.")
 
-    def _inject_to_node(self, node_id, vector, label=None):
+    def _inject_to_node(self, node_id, vector, label=None, is_seeded=True):
         """
         FIXED: Writes to the Contiguous Master Block instead of individual node attributes.
-        This preserves the graph's ability to optimize for variance.
+        Handles seeding and restores tombstoned nodes automatically.
         """
         node_key = str(node_id)
 
-        # 1. Ensure the node exists in the graph's registry
+        # 1️⃣ Ensure the node exists in the graph's registry
         if node_key not in self.graph.nodes:
             self.graph.add_node(node_id, label=label)
+            node = self.graph.nodes[node_key]
+            if is_seeded:
+                node.mark_seeded()  # ConceptNode helper sets is_axiom, origin_type, etc.
+        else:
+            node = self.graph.nodes[node_key]
+            # If previously tombstoned, restore it
+            if getattr(node, "is_tombstoned", False):
+                self.graph.restore_node(node_id)
+            # Optionally mark as seeded again
+            if is_seeded:
+                node.mark_seeded()
 
+        # Update the label if provided
         if label is not None:
-            self.graph.nodes[node_key].label = str(label)
+            node.label = str(label)
 
-        # 2. Normalize the vector for spherical grounding
+        # 2️⃣ Normalize the vector for spherical grounding
         if vector.norm() > 0:
             vector = vector / vector.norm()
 
-        # 3. Locate the node's position in the contiguous master block
+        # 3️⃣ Locate the node's position in the contiguous master block
         try:
-            # We look up the index where this node's parameters live
             node_idx = self.graph.node_order.index(node_key)
 
             with torch.no_grad():
-                # Ensure the vector is moved to the target device and matched to EMBED_DIM
+                # Move to device & pad/trim to EMBED_DIM
                 target_vec = vector.to(self.device).view(-1)
                 if target_vec.size(0) != EMBED_DIM:
-                    # Resize/Pad if necessary to maintain master block integrity
                     new_vec = torch.zeros(EMBED_DIM, device=self.device)
                     slice_size = min(target_vec.size(0), EMBED_DIM)
                     new_vec[:slice_size] = target_vec[:slice_size]
                     target_vec = new_vec
 
                 # WRITE TO MASTER EMBEDDING BLOCK
-                # Replacing old self.graph.nodes[node_key].embedding access
                 self.graph.master_embeddings[node_idx].copy_(target_vec)
 
-                # SEEDING BOOST: Ensure seeded nodes start with strong alignment (Radial Depth)
-                # This ensures they are visible to the manifold immediately.
+                # SEEDING BOOST: Strong alignment for seeded nodes
                 if hasattr(self.graph, 'master_alignments'):
                     self.graph.master_alignments[node_idx].fill_(0.85)
 
-                # Ensure the node is visible (not tombstoned)
+                # Ensure node is visible in manifold
                 if hasattr(self.graph, 'tombstone_mask'):
                     self.graph.tombstone_mask[node_idx] = 1.0
 
         except ValueError:
             print(f"[!] Seeder Sync Error: {node_key} exists in dict but not in node_order.")
 
-        # 4. Update the grounding anchor for topological stability
+        # 4️⃣ Update the grounding anchor for topological stability
         self.graph.update_local_centroid(node_id)
 
     def seed_all(self, semantic_concepts=None, sensory_patterns=None):

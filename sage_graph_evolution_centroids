@@ -1,0 +1,85 @@
+// SAGE Shared Concept Graph Evolution
+digraph {
+	Infant_C1 [label="C1
+(Infant)" fillcolor=lightblue style=filled]
+	Infant_C2 [label="C2
+(Infant)" fillcolor=lightblue style=filled]
+	Infant_C3 [label="C3
+(Infant)" fillcolor=lightblue style=filled]
+	Infant_Centroid [label="Infant Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Toddler_C1 [label="C1
+(Toddler)" fillcolor=lightgreen style=filled]
+	Toddler_C2 [label="C2
+(Toddler)" fillcolor=lightgreen style=filled]
+	Toddler_C3 [label="C3
+(Toddler)" fillcolor=lightgreen style=filled]
+	Toddler_Centroid [label="Toddler Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Preschool_C1 [label="C1
+(Preschool)" fillcolor=yellow style=filled]
+	Preschool_C2 [label="C2
+(Preschool)" fillcolor=yellow style=filled]
+	Preschool_C3 [label="C3
+(Preschool)" fillcolor=yellow style=filled]
+	Preschool_Centroid [label="Preschool Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Gradeschool_C1 [label="C1
+(Gradeschool)" fillcolor=orange style=filled]
+	Gradeschool_C2 [label="C2
+(Gradeschool)" fillcolor=orange style=filled]
+	Gradeschool_C3 [label="C3
+(Gradeschool)" fillcolor=orange style=filled]
+	Gradeschool_Centroid [label="Gradeschool Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Teen_C1 [label="C1
+(Teen)" fillcolor=pink style=filled]
+	Teen_C2 [label="C2
+(Teen)" fillcolor=pink style=filled]
+	Teen_C3 [label="C3
+(Teen)" fillcolor=pink style=filled]
+	Teen_Centroid [label="Teen Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Adult_C1 [label="C1
+(Adult)" fillcolor=purple style=filled]
+	Adult_C2 [label="C2
+(Adult)" fillcolor=purple style=filled]
+	Adult_C3 [label="C3
+(Adult)" fillcolor=purple style=filled]
+	Adult_Centroid [label="Adult Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Sage_C1 [label="C1
+(Sage)" fillcolor=gold style=filled]
+	Sage_C2 [label="C2
+(Sage)" fillcolor=gold style=filled]
+	Sage_C3 [label="C3
+(Sage)" fillcolor=gold style=filled]
+	Sage_Centroid [label="Sage Centroid" fillcolor=white shape=ellipse style="filled,dashed"]
+	Infant_C1 -> Infant_Centroid [color=gray style=dotted]
+	Infant_C2 -> Infant_Centroid [color=gray style=dotted]
+	Infant_C3 -> Infant_Centroid [color=gray style=dotted]
+	Toddler_C1 -> Toddler_Centroid [color=gray style=dotted]
+	Toddler_C2 -> Toddler_Centroid [color=gray style=dotted]
+	Toddler_C3 -> Toddler_Centroid [color=gray style=dotted]
+	Preschool_C1 -> Preschool_Centroid [color=gray style=dotted]
+	Preschool_C2 -> Preschool_Centroid [color=gray style=dotted]
+	Preschool_C3 -> Preschool_Centroid [color=gray style=dotted]
+	Gradeschool_C1 -> Gradeschool_Centroid [color=gray style=dotted]
+	Gradeschool_C2 -> Gradeschool_Centroid [color=gray style=dotted]
+	Gradeschool_C3 -> Gradeschool_Centroid [color=gray style=dotted]
+	Teen_C1 -> Teen_Centroid [color=gray style=dotted]
+	Teen_C2 -> Teen_Centroid [color=gray style=dotted]
+	Teen_C3 -> Teen_Centroid [color=gray style=dotted]
+	Adult_C1 -> Adult_Centroid [color=gray style=dotted]
+	Adult_C2 -> Adult_Centroid [color=gray style=dotted]
+	Adult_C3 -> Adult_Centroid [color=gray style=dotted]
+	Sage_C1 -> Sage_Centroid [color=gray style=dotted]
+	Sage_C2 -> Sage_Centroid [color=gray style=dotted]
+	Sage_C3 -> Sage_Centroid [color=gray style=dotted]
+	Infant_Centroid -> Toddler_Centroid [label=evolution color=blue fontsize=10]
+	Toddler_Centroid -> Preschool_Centroid [label=evolution color=blue fontsize=10]
+	Preschool_Centroid -> Gradeschool_Centroid [label=evolution color=blue fontsize=10]
+	Gradeschool_Centroid -> Teen_Centroid [label=evolution color=blue fontsize=10]
+	Teen_Centroid -> Adult_Centroid [label=evolution color=blue fontsize=10]
+	Adult_Centroid -> Sage_Centroid [label=evolution color=blue fontsize=10]
+	Sage_Meta [label="Meta-Governance
+(Sage)" fillcolor=gold shape=doublecircle style=filled]
+	Sage_C1 -> Sage_Meta [color=red]
+	Sage_C2 -> Sage_Meta [color=red]
+	Sage_C3 -> Sage_Meta [color=red]
+	Sage_Centroid -> Sage_Meta [color=darkred penwidth=2]
+}

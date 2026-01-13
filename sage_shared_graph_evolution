@@ -1,0 +1,105 @@
+// SAGE Shared Concept Graph Evolution
+digraph {
+	Infant_C1 [label="C1
+(Infant)" fillcolor=lightblue style=filled]
+	Infant_C2 [label="C2
+(Infant)" fillcolor=lightblue style=filled]
+	Infant_C3 [label="C3
+(Infant)" fillcolor=lightblue style=filled]
+	Toddler_C1 [label="C1
+(Toddler)" fillcolor=lightgreen style=filled]
+	Toddler_C2 [label="C2
+(Toddler)" fillcolor=lightgreen style=filled]
+	Toddler_C3 [label="C3
+(Toddler)" fillcolor=lightgreen style=filled]
+	Preschool_C1 [label="C1
+(Preschool)" fillcolor=yellow style=filled]
+	Preschool_C2 [label="C2
+(Preschool)" fillcolor=yellow style=filled]
+	Preschool_C3 [label="C3
+(Preschool)" fillcolor=yellow style=filled]
+	Gradeschool_C1 [label="C1
+(Gradeschool)" fillcolor=orange style=filled]
+	Gradeschool_C2 [label="C2
+(Gradeschool)" fillcolor=orange style=filled]
+	Gradeschool_C3 [label="C3
+(Gradeschool)" fillcolor=orange style=filled]
+	Teen_C1 [label="C1
+(Teen)" fillcolor=pink style=filled]
+	Teen_C2 [label="C2
+(Teen)" fillcolor=pink style=filled]
+	Teen_C3 [label="C3
+(Teen)" fillcolor=pink style=filled]
+	Adult_C1 [label="C1
+(Adult)" fillcolor=purple style=filled]
+	Adult_C2 [label="C2
+(Adult)" fillcolor=purple style=filled]
+	Adult_C3 [label="C3
+(Adult)" fillcolor=purple style=filled]
+	Sage_C1 [label="C1
+(Sage)" fillcolor=gold style=filled]
+	Sage_C2 [label="C2
+(Sage)" fillcolor=gold style=filled]
+	Sage_C3 [label="C3
+(Sage)" fillcolor=gold style=filled]
+	Infant_C1 -> Toddler_C1 [color=gray style=dashed]
+	Infant_C1 -> Toddler_C2 [color=gray style=dashed]
+	Infant_C1 -> Toddler_C3 [color=gray style=dashed]
+	Infant_C2 -> Toddler_C1 [color=gray style=dashed]
+	Infant_C2 -> Toddler_C2 [color=gray style=dashed]
+	Infant_C2 -> Toddler_C3 [color=gray style=dashed]
+	Infant_C3 -> Toddler_C1 [color=gray style=dashed]
+	Infant_C3 -> Toddler_C2 [color=gray style=dashed]
+	Infant_C3 -> Toddler_C3 [color=gray style=dashed]
+	Toddler_C1 -> Preschool_C1 [color=gray style=dashed]
+	Toddler_C1 -> Preschool_C2 [color=gray style=dashed]
+	Toddler_C1 -> Preschool_C3 [color=gray style=dashed]
+	Toddler_C2 -> Preschool_C1 [color=gray style=dashed]
+	Toddler_C2 -> Preschool_C2 [color=gray style=dashed]
+	Toddler_C2 -> Preschool_C3 [color=gray style=dashed]
+	Toddler_C3 -> Preschool_C1 [color=gray style=dashed]
+	Toddler_C3 -> Preschool_C2 [color=gray style=dashed]
+	Toddler_C3 -> Preschool_C3 [color=gray style=dashed]
+	Preschool_C1 -> Gradeschool_C1 [color=gray style=dashed]
+	Preschool_C1 -> Gradeschool_C2 [color=gray style=dashed]
+	Preschool_C1 -> Gradeschool_C3 [color=gray style=dashed]
+	Preschool_C2 -> Gradeschool_C1 [color=gray style=dashed]
+	Preschool_C2 -> Gradeschool_C2 [color=gray style=dashed]
+	Preschool_C2 -> Gradeschool_C3 [color=gray style=dashed]
+	Preschool_C3 -> Gradeschool_C1 [color=gray style=dashed]
+	Preschool_C3 -> Gradeschool_C2 [color=gray style=dashed]
+	Preschool_C3 -> Gradeschool_C3 [color=gray style=dashed]
+	Gradeschool_C1 -> Teen_C1 [color=gray style=dashed]
+	Gradeschool_C1 -> Teen_C2 [color=gray style=dashed]
+	Gradeschool_C1 -> Teen_C3 [color=gray style=dashed]
+	Gradeschool_C2 -> Teen_C1 [color=gray style=dashed]
+	Gradeschool_C2 -> Teen_C2 [color=gray style=dashed]
+	Gradeschool_C2 -> Teen_C3 [color=gray style=dashed]
+	Gradeschool_C3 -> Teen_C1 [color=gray style=dashed]
+	Gradeschool_C3 -> Teen_C2 [color=gray style=dashed]
+	Gradeschool_C3 -> Teen_C3 [color=gray style=dashed]
+	Teen_C1 -> Adult_C1 [color=gray style=dashed]
+	Teen_C1 -> Adult_C2 [color=gray style=dashed]
+	Teen_C1 -> Adult_C3 [color=gray style=dashed]
+	Teen_C2 -> Adult_C1 [color=gray style=dashed]
+	Teen_C2 -> Adult_C2 [color=gray style=dashed]
+	Teen_C2 -> Adult_C3 [color=gray style=dashed]
+	Teen_C3 -> Adult_C1 [color=gray style=dashed]
+	Teen_C3 -> Adult_C2 [color=gray style=dashed]
+	Teen_C3 -> Adult_C3 [color=gray style=dashed]
+	Adult_C1 -> Sage_C1 [color=gray style=dashed]
+	Adult_C1 -> Sage_C2 [color=gray style=dashed]
+	Adult_C1 -> Sage_C3 [color=gray style=dashed]
+	Adult_C2 -> Sage_C1 [color=gray style=dashed]
+	Adult_C2 -> Sage_C2 [color=gray style=dashed]
+	Adult_C2 -> Sage_C3 [color=gray style=dashed]
+	Adult_C3 -> Sage_C1 [color=gray style=dashed]
+	Adult_C3 -> Sage_C2 [color=gray style=dashed]
+	Adult_C3 -> Sage_C3 [color=gray style=dashed]
+	node [fillcolor=gold shape=doublecircle style=filled]
+	Sage_Meta [label="Meta-Governance
+(Sage)"]
+	Sage_C1 -> Sage_Meta [color=red]
+	Sage_C2 -> Sage_Meta [color=red]
+	Sage_C3 -> Sage_Meta [color=red]
+}

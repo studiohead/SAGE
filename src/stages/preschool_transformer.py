@@ -1,9 +1,16 @@
 ##############################################################################
-# Preschool | Adaptive Relational Grounding
-# Purpose:
-# Saliency-weighted node prioritization via Latent Cross-Attention.
-# Bridging Toddler (Filtering) and Gradeschool (Projection).
+# Preschool | y = x + W * Σ(Softmax(G) · G)
+# Purpose: Saliency-weighted relational grounding over graph nodes.
+# Details:
+#   - Applies latent attention over graph embeddings (G) to prioritize globally salient nodes
+#   - Aggregates weighted embeddings into internal representation (x)
+#   - Bridges Toddler (feature gating & relational orientation) and Gradeschool (structured projection)
+#   - Encourages nodes that co-activate strongly to influence representation more heavily
+# Notes:
+#   - Establishes global saliency awareness in the graph
+#   - Supports later stages that rely on structured categorical manifolds
 ##############################################################################
+
 
 import torch
 import torch.nn as nn

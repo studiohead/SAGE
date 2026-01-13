@@ -234,7 +234,7 @@ def main():
         while True:
             prompt = input(">>> ")
             if prompt.lower() in {"exit", "quit"}: break
-            response = sage_infer.respond(prompt, top_k=5)
+            response = sage_infer.respond(prompt, top_k=5, interactive=True)
             print(f"SAGE: {response}")
             print("-" * 40)
 

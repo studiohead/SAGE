@@ -10,25 +10,37 @@ EMBED_DIM = SHARED_MODEL_CONFIG.get('embed_dim')
 
 class ConceptNode(nn.Module):
     """
-    Surgical Node Metadata: Tracks the topological 'soul' of a concept.
-    Maintains connectivity, maturation state, and tombstone status.
+    Tracks the 'soul' of a concept node.
+    Separates immutable ontology from mutable runtime state.
     """
 
-    def __init__(self, node_id, label=None):
+    def __init__(self, node_id, label=None, origin_type=None):
         super().__init__()
         self.node_id = node_id
         self.label = label
 
-        # --- STRUCTURAL INFRASTRUCTURE ---
-        self.connections = {}  # {neighbor_node_id: weight}
-        self.is_tombstoned = False
-        self.tombstone_key = None  # Stores the rotation matrix for displacement
+        # --- STRUCTURAL INFRA ---
+        self.connections = {}  # neighbor_id -> weight
         self.stage_idx = -1
         self.gradient_mask = 1.0
 
+        # --- MUTABLE FLAGS ---
+        self.is_permanent = False       # seeded nodes
+        self.is_tombstoned = False
+        self.tombstone_key = None
+
+        # --- ONTOLOGY / AXIOMATIC METADATA ---
+        self.is_axiom = False           # foundational / immutable
+        self.origin_type = origin_type   # 'SEED', 'LEARNED', 'DERIVED', 'EXTERNAL'
+
+    def mark_seeded(self):
+        """Flag this node as a foundational seeded node."""
+        self.is_permanent = True
+        self.is_axiom = True
+        self.origin_type = 'SEED'
 
 class SharedConceptGraph(nn.Module):
-    def __init__(self, embedding_dim=EMBED_DIM, lambda_ewma=0.1, promotion_threshold=0.7, max_nodes=10000):
+    def __init__(self, embedding_dim=EMBED_DIM, lambda_ewma=0.1, promotion_threshold=0.7, max_nodes=20000):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.max_nodes = max_nodes
@@ -37,6 +49,7 @@ class SharedConceptGraph(nn.Module):
         self.anchor_tensor = {}
         self.lambda_ewma = lambda_ewma
         self.promotion_threshold = promotion_threshold
+        self._node_index = {}
 
         # --- CONTIGUOUS GRADIENT BLOCK ---
         # We use a very tight uniform initialization to maximize 'Repulsive Tension'
@@ -70,11 +83,15 @@ class SharedConceptGraph(nn.Module):
         if node_key not in self.nodes:
             idx = len(self.node_order)
             if idx >= self.max_nodes:
-                return
+                raise RuntimeError(
+                    f"Graph capacity exceeded ({self.max_nodes}). "
+                    f"Call expand_capacity() before adding nodes."
+                )
 
             new_node = ConceptNode(node_id, label=label)
             self.nodes[node_key] = new_node
             self.node_order.append(node_key)
+            self._node_index[node_key] = idx
 
             # Activate and initialize the slot
             with torch.no_grad():
@@ -90,13 +107,18 @@ class SharedConceptGraph(nn.Module):
         node_key = str(node_id)
         if node_key not in self.nodes: return
 
-        idx = self.node_order.index(node_key)
+        idx = self._node_index[node_key]
         neighbors = [str(nid) for nid in self.nodes[node_key].connections.keys() if str(nid) in self.nodes]
 
         if not neighbors:
             c_v_new = F.normalize(self.master_embeddings[idx].detach().clone(), p=2, dim=0)
         else:
-            n_indices = [self.node_order.index(nid) for nid in neighbors]
+            n_indices = [
+                self._node_index[nid]
+                for nid in neighbors
+                if nid in self._node_index
+            ]
+
             neighbor_embs = self.master_embeddings[n_indices].detach()
             c_v_new = neighbor_embs.mean(dim=0)
 
@@ -210,7 +232,7 @@ class SharedConceptGraph(nn.Module):
             emb = self.anchor_tensor.get(int(node_key), None)
             if emb is None:
                 try:
-                    idx = self.node_order.index(node_key)
+                    idx = self._node_index[node_key]
                     emb = self.master_embeddings[idx]
                 except ValueError:
                     continue  # Safety check if index is missing
@@ -239,7 +261,7 @@ class SharedConceptGraph(nn.Module):
         context_data = []
         for idx in top_indices:
             node_key = valid_keys[idx.item()]
-            orig_idx = self.node_order.index(node_key)
+            orig_idx = self._node_index[node_key]
             emb_out = F.normalize(self.master_embeddings[orig_idx], p=2, dim=0)
             context_data.append((emb_out, node_key))
 
@@ -324,7 +346,7 @@ class SharedConceptGraph(nn.Module):
         if node_key in self.nodes:
             # 1. LOCATE HARDWARE INDEX
             try:
-                idx = self.node_order.index(node_key)
+                idx = self._node_index[node_key]
             except ValueError:
                 # Safety: If it's in nodes but not in order, the graph is already drifted.
                 del self.nodes[node_key]
@@ -360,7 +382,7 @@ class SharedConceptGraph(nn.Module):
         """Soft reset: Displace node and mask its variance contribution."""
         node_key = str(node_id)
         if node_key in self.nodes:
-            idx = self.node_order.index(node_key)
+            idx = self._node_index[node_key]
             node = self.nodes[node_key]
             node.tombstone_key = r_tomb.to(self.device)
             with torch.no_grad():
@@ -374,7 +396,7 @@ class SharedConceptGraph(nn.Module):
         """Reverse rotation and restore presence to the manifold."""
         node_key = str(node_id)
         if node_key in self.nodes:
-            idx = self.node_order.index(node_key)
+            idx = self._node_index[node_key]
             node = self.nodes[node_key]
             if not node.is_tombstoned or node.tombstone_key is None: return
             with torch.no_grad():
@@ -410,20 +432,17 @@ class SharedConceptGraph(nn.Module):
         print(f"[!] Synaptic Cleanup: {edges_removed} weak edges incinerated (Threshold: {min_weight}).")
         return edges_removed
 
-    def adaptive_prune(self, tightness, max_tightness=0.15, prune_fraction=0.4, nodes_to_consider=None,
-                       min_connections=2):
+    def adaptive_prune(self, tightness, max_tightness=0.15, prune_fraction=0.4,
+                       nodes_to_consider=None, min_connections=2):
         """
         Reduces edge density when structural tightness exceeds limits.
         Only prunes nodes with at least `min_connections` edges.
+        Respects foundational / permanent / tombstoned nodes.
         """
         if tightness <= max_tightness:
             return
 
-        # Use membership check instead of .get() for ModuleDict compatibility
         keys = [str(n) for n in nodes_to_consider] if nodes_to_consider else self.node_order
-
-        # Foundational Concepts to protect
-        protected_labels = {str(i) for i in range(400)}
 
         for k in keys:
             if k not in self.nodes:
@@ -431,22 +450,29 @@ class SharedConceptGraph(nn.Module):
 
             node = self.nodes[k]
 
-            # PROTECT: Never prune edges belonging to the Respected Ten
-            if str(node.label) in protected_labels:
+            # 1️⃣ Skip protected nodes
+            if getattr(node, "is_axiom", False) or getattr(node, "is_permanent", False):
                 continue
 
-            # Skip nodes with too few connections
-            if node.connections and len(node.connections) >= min_connections:
-                # Prune only the weakest edges
-                num_to_prune = int(len(node.connections) * prune_fraction)
-                if num_to_prune < 1:
-                    continue  # Skip if computed prune count < 1
+            # 2️⃣ Skip tombstoned nodes
+            if getattr(node, "is_tombstoned", False):
+                continue
 
-                weak = sorted(node.connections.items(), key=lambda x: x[1])[:num_to_prune]
+            # 3️⃣ Skip nodes with too few connections
+            if not node.connections and len(node.connections) < min_connections:
+                continue
 
-                for nbr, _ in weak:
-                    # Ensure the neighbor isn't a protected node before popping
-                    node.connections.pop(nbr, None)
+            # 4️⃣ Sort edges by weight and remove weakest
+            num_to_prune = max(int(len(node.connections) * prune_fraction), 1)
+            weak = sorted(node.connections.items(), key=lambda x: x[1])[:num_to_prune]
+
+            for nbr, _ in weak:
+                # Check neighbor protection before pruning
+                if nbr in self.nodes:
+                    neighbor_node = self.nodes[nbr]
+                    if getattr(neighbor_node, "is_axiom", False) or getattr(neighbor_node, "is_permanent", False):
+                            continue
+                node.connections.pop(nbr, None)
 
         self.version += 1
 
@@ -471,14 +497,19 @@ class SharedConceptGraph(nn.Module):
     def create_node_from_trace(self, trace, label=None, initial_attachment_k=3):
         """Surgical birth with immediate synaptic tethering and capacity guard."""
 
-        # --- THE GROWTH CAP (Original Guard) ---
+        # --- THE GROWTH CAP ---
         new_id = len(self.node_order)
         if new_id >= self.max_nodes:
             print(f"[!] Graph at capacity ({self.max_nodes}). Growth aborted.")
             return None
 
-        # 1. Standard registration
+        # 1️⃣ Standard registration
         self.add_node(new_id, label=label)
+
+        # Mark the node as permanent (protected) and optionally as axiomatic
+        node = self.nodes[str(new_id)]
+        node.is_permanent = False  # Protect this node initially
+        node.is_axiom = False  # Optional: can mark if this should be treated as foundational
 
         if isinstance(trace, torch.Tensor):
             with torch.no_grad():
@@ -486,29 +517,28 @@ class SharedConceptGraph(nn.Module):
                 source_vec = trace.detach().view(-1)[:self.embedding_dim].to(self.device)
                 source_vec = F.normalize(source_vec, p=2, dim=0)
 
-                # Write to physical manifold
+                # Write to physical manifold (master embedding)
                 self.master_embeddings[new_id].copy_(source_vec)
 
-                # 2. IMMEDIATE SYNC (Prevents retrieval invisibility)
+                # 2️⃣ IMMEDIATE SYNC: Prevent retrieval invisibility
                 self.anchor_tensor[new_id] = source_vec.clone()
 
-                # 3. INITIAL TETHERING
-                # We must tether here so the first EWMA update has context.
+                # 3️⃣ INITIAL TETHERING: connect to closest existing nodes
                 if new_id > 0:
-                    # Use detach to avoid bleeding gradients during birth
+                    # Use detach to avoid bleeding gradients
                     full_matrix = self.get_graph_embedding_matrix().detach()
 
-                    # Compare against current manifold (excluding the node being born)
+                    # Compare against current manifold (excluding the new node itself)
                     sims = torch.matmul(full_matrix, source_vec)
 
                     # Top-K closest existing concepts
-                    vals, idxs = torch.topk(sims[:-1], min(initial_attachment_k, new_id))
+                    top_k = min(initial_attachment_k, new_id)
+                    vals, idxs = torch.topk(sims[:-1], top_k)
 
-                    new_node = self.nodes[str(new_id)]
                     for v, i in zip(vals, idxs):
                         target_key = self.node_order[i.item()]
-                        # Immediate bidirectional synaptic seeding
-                        new_node.connections[target_key] = v.item()
+                        # Bidirectional synaptic seeding
+                        node.connections[target_key] = v.item()
                         self.nodes[target_key].connections[str(new_id)] = v.item()
 
         self.version += 1
@@ -558,3 +588,60 @@ class SharedConceptGraph(nn.Module):
 
         if self.master_embeddings.grad is not None:
             self.master_embeddings.grad.zero_()
+
+    def expand_capacity(self, new_max_nodes: int):
+        """
+        Safely expands graph capacity without losing learned state.
+        """
+        if new_max_nodes <= self.max_nodes:
+            return
+
+        device = self.master_embeddings.device
+        emb_dim = self.master_embeddings.size(1)
+        old_n = self.max_nodes
+
+        # ---- PARAMETERS (trainable) ----
+        def expand_parameter(old_param, new_shape):
+            new_param = torch.zeros(*new_shape, device=device)
+            new_param[: old_param.size(0)] = old_param.data
+            return nn.Parameter(new_param)
+
+        self.master_embeddings = expand_parameter(
+            self.master_embeddings, (new_max_nodes, emb_dim)
+        )
+        self.master_alignments = expand_parameter(
+            self.master_alignments, (new_max_nodes, 1)
+        )
+
+        # ---- BUFFERS (non-trainable) ----
+        new_active_mask = torch.zeros(new_max_nodes, 1, device=device)
+        new_active_mask[:old_n] = self.active_mask
+        self.active_mask = new_active_mask
+
+        new_tombstone_mask = torch.ones(new_max_nodes, 1, device=device)
+        new_tombstone_mask[:old_n] = self.tombstone_mask
+        self.tombstone_mask = new_tombstone_mask
+
+        self.max_nodes = new_max_nodes
+
+    def tombstone_node(self, node_id, rotation_matrix):
+        node = self.nodes[str(node_id)]
+        idx = self._node_index[str(node_id)]
+        node.tombstone_key = rotation_matrix.to(self.device)
+        with torch.no_grad():
+            self.master_embeddings[idx].copy_(self.master_embeddings[idx] @ node.tombstone_key)
+            self.tombstone_mask[idx] = 0.0
+        node.is_tombstoned = True
+        self.version += 1
+
+    def restore_node(self, node_id):
+        node = self.nodes[str(node_id)]
+        idx = self._node_index[str(node_id)]
+        if node.is_tombstoned and node.tombstone_key is not None:
+            with torch.no_grad():
+                self.master_embeddings[idx].copy_(self.master_embeddings[idx] @ node.tombstone_key.T)
+                self.tombstone_mask[idx] = 1.0
+            node.is_tombstoned = False
+            node.tombstone_key = None
+            self.version += 1
+

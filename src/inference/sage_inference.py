@@ -39,7 +39,6 @@ class SAGEInference:
         if prompt_emb.dim() == 1:
             prompt_emb = prompt_emb.unsqueeze(0)
 
-        # Ensure device consistency
         device = getattr(self.graph, "device", "cpu")
         prompt_emb = prompt_emb.to(device)
 
@@ -47,20 +46,23 @@ class SAGEInference:
         context_data = self.graph.retrieve_manifold_context(prompt_emb, top_k=top_k)
 
         response_labels = []
-        retrieved_indices = []
+        retrieved_keys = []  # Maps display index → actual node key
+        retrieved_indices = []  # Graph order indices for impact calculation
 
         for _, node_id in context_data:
             node_key = str(node_id)
+            retrieved_keys.append(node_key)
 
-            if node_key not in self.graph.nodes:
-                response_labels.append(f"[INCINERATED:{node_key}]")
-            else:
+            # ModuleDict-safe access
+            if node_key in self.graph.nodes:
                 node = self.graph.nodes[node_key]
                 if getattr(node, "is_tombstoned", False):
                     response_labels.append(f"[TOMBSTONED:{node_key}]")
                 else:
                     label = str(node.label) if node.label is not None else node_key
                     response_labels.append(label)
+            else:
+                response_labels.append(f"[INCINERATED:{node_key}]")
 
             if node_key in self.graph.node_order:
                 retrieved_indices.append(self.graph.node_order.index(node_key))
@@ -70,7 +72,7 @@ class SAGEInference:
         if return_impact:
             if retrieved_indices:
                 manifold = self.graph.get_graph_embedding_matrix()
-                if len(retrieved_indices) > 0 and manifold.size(0) > 0:
+                if manifold.size(0) > 0:
                     retrieved_embs = F.normalize(manifold[retrieved_indices], p=2, dim=1)
                     prompt_vec = F.normalize(prompt_emb.mean(dim=0), p=2, dim=0)
                     cos_sim = torch.matmul(retrieved_embs, prompt_vec)
@@ -104,11 +106,12 @@ class SAGEInference:
                     if len(parts) >= 2:
                         demote_idx = int(parts[1])
                         decay_factor = float(parts[2]) if len(parts) == 3 else 0.5
-                        if 0 <= demote_idx < len(context_data):
-                            _, node_id = context_data[demote_idx]
-                            node_key = str(node_id)
-                            node = self.graph.nodes.get(node_key, None)
-                            if node is not None:
+
+                        if 0 <= demote_idx < len(retrieved_keys):
+                            node_key = retrieved_keys[demote_idx]
+                            if node_key in self.graph.nodes:
+                                node = self.graph.nodes[node_key]
+                                # Apply decay to all outgoing edges
                                 for target_key in list(node.connections.keys()):
                                     node.connections[target_key] *= decay_factor
                                     if target_key in self.graph.nodes:
@@ -117,6 +120,8 @@ class SAGEInference:
                                             target_node.connections[node_key] *= decay_factor
                                 self.graph.version += 1
                                 print(f"[+] Demoted node {node_key} with decay factor {decay_factor}")
+                            else:
+                                print(f"[!] Node {node_key} no longer exists.")
                         else:
                             print("[!] Invalid index for demotion.")
                 except Exception as e:
@@ -148,13 +153,14 @@ class SAGEInference:
                 return
             visited.add(node_key)
 
-            if node_key not in self.graph.nodes:
+            # --- Corrected ModuleDict access ---
+            if node_key in self.graph.nodes:
+                node = self.graph.nodes[node_key]
+            else:
                 trace["path_labels"].append(f"[INCINERATED:{node_key}]")
                 trace["node_indices"].append(node_key)
                 trace["incinerations_encountered"].append(node_key)
                 return
-
-            node = self.graph.nodes[node_key]
 
             if getattr(node, "is_tombstoned", False):
                 trace["path_labels"].append(f"[TOMBSTONE:{node_key}]")
@@ -162,9 +168,10 @@ class SAGEInference:
                 trace["tombstones_encountered"].append(node_key)
                 return
 
-            trace["path_labels"].append(node.label if node.label else node_key)
+            trace["path_labels"].append(node.label if node.label is not None else node_key)
             trace["node_indices"].append(node_key)
 
+            # Track anchor concepts
             try:
                 node_idx_val = int(node_key)
                 if node_idx_val < len(self.broad_concepts):
@@ -173,14 +180,15 @@ class SAGEInference:
                 if node_key in self.broad_concepts:
                     trace["anchors_detected"].add(node_key)
 
+            # Traverse neighbors
             if hasattr(node, "connections") and node.connections:
-                for nbr in node.connections:
-                    dfs(str(nbr), depth + 1)
+                for nbr_key in node.connections:
+                    dfs(str(nbr_key), depth + 1)
 
         for nk in start_nodes:
             dfs(str(nk), 0)
 
-        trace["anchors_detected"] = list(trace["anchors_detected"])
+        trace["anchors_detected"] = sorted(trace["anchors_detected"])
         return trace
 
     def get_path_logic_summary(self, thinking_trace):

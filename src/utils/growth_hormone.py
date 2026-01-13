@@ -7,8 +7,9 @@ class GrowthHormone:
     Regulates the birth of new nodes based on structural 'Pressure'.
     """
 
-    def __init__(self, floor: object = 0.55, ceiling: object = 0.85, winner_indices: object = None) -> None:
+    def __init__(self, floor: float = 0.99, ceiling: float = 1.00, winner_indices: object = None) -> None:
         self.confidence_floor = floor
+        print(self.confidence_floor)
         self.confidence_ceiling = ceiling
         self.winner_indices = winner_indices
         self.batch_created_labels = set()  # Reset per batch to prevent explosion
@@ -21,9 +22,10 @@ class GrowthHormone:
     def has_potential_growth(self, telemetry):
         """
         Determines if the structural divergence justifies a new node.
-        Target Gamma: > 0.033 (Structural Tension).
+        Target Gamma: > 0.05 (Structural Tension).
         """
-        return telemetry.get("gamma_divergence", 0.0) > 0.033
+        gamma = telemetry.get("gamma_divergence", 0.0)
+        return 0.70 < gamma < 0.5
 
     def maybe_create_node(self, telemetry, graph):
         base_label = telemetry.get("text", "node")
@@ -58,7 +60,7 @@ class GrowthHormone:
             new_node_id = graph.create_node_from_trace(telemetry.get("trace"), label=base_label)
             if new_node_id is not None:
                 self.batch_created_labels.add(base_label)
-                print(f"[+] BIRTH SUCCESS: Node {new_node_id}")
+                print(f"[+] BIRTH SUCCESS: Node {new_node_id}: {base_label}")
                 return new_node_id
             else:
                 print("DEBUG: graph.create_node_from_trace returned None (Capacity?)")

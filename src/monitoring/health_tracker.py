@@ -42,7 +42,7 @@ class ManifoldHealthTracker:
         # Measures the average distance of nodes from the center of the manifold.
         global_centroid = node_matrix.mean(dim=0, keepdim=True)
         dist = torch.norm(node_matrix - global_centroid, p=2, dim=1)
-        centroid_drift = dist.mean().item()
+        centroid_radius = dist.mean().item()
 
         # 4. STRUCTURAL DENSITY
         node_count = len(self.graph.nodes)
@@ -53,8 +53,9 @@ class ManifoldHealthTracker:
         print(f"\n>>> [MANIFOLD HEALTH: {stage_name} | Epoch {epoch}]")
         print(f"    - Variance:    {variance:.6f}  (Geometric Spread)")
         print(f"    - Pressure:    {latent_pressure:.4f}  (Residual Repulsion)")
-        print(f"    - Drift:       {centroid_drift:.4f}  (Centroid Stability)")
+        print(f"    - Centroid Radius:       {centroid_radius:.4f}  (Centroid Stability)")
         print(f"    - Density:     {structural_density:.4f}  (Structural Hairball)")
+        print(f"    - Total Nodes: {node_count}")
         print(f"    - Total Edges: {total_edges}")
 
         # HEURISTIC ALERTS

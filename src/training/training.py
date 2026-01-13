@@ -145,6 +145,7 @@ def run_train_cycle(frontend, sage_container, auditor, analytics, stage_name, ar
         p_weight = hparams.get("pressure_weight", 0.2)
 
         for batch in loader:
+            gh.reset_batch()
             optimizer.zero_grad(set_to_none=True)
 
             # --- SAGE GRADIENT SUTURE ---
